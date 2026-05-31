@@ -11,6 +11,10 @@ import time
 import shutil
 import asyncio
 import logging
+import hmac
+import hashlib
+import secrets
+import ipaddress
 import requests
 import zipfile
 from typing import List, Dict, Any, Optional
@@ -21,7 +25,7 @@ from io import BytesIO
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -174,6 +178,7 @@ CONVERSATION_DIR = os.path.join(DATA_DIR, "conversations")
 CANVAS_DIR = os.path.join(DATA_DIR, "canvases")
 API_PROVIDERS_FILE = os.path.join(DATA_DIR, "api_providers.json")
 GLOBAL_CONFIG_FILE = os.path.join(BASE_DIR, "global_config.json")
+SHARE_CONFIG_FILE = os.path.join(DATA_DIR, "share_config.json")
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 QUEUE = []
@@ -182,6 +187,7 @@ HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
 CANVAS_LOCK = Lock()
+SHARE_CONFIG_LOCK = Lock()
 LOAD_LOCK = Lock()
 NEXT_TASK_ID = 1
 
@@ -265,6 +271,8 @@ COMFYUI_HISTORY_TIMEOUT = int(float(os.getenv("COMFYUI_HISTORY_TIMEOUT", "1800")
 APIMART_IMAGE_TASK_TIMEOUT = float(os.getenv("APIMART_IMAGE_TASK_TIMEOUT", "1800"))
 APIMART_IMAGE_POLL_INTERVAL = float(os.getenv("APIMART_IMAGE_POLL_INTERVAL", "5"))
 APIMART_IMAGE_INITIAL_POLL_DELAY = float(os.getenv("APIMART_IMAGE_INITIAL_POLL_DELAY", "10"))
+KR_IMAGE_TASK_TIMEOUT = float(os.getenv("KR_IMAGE_TASK_TIMEOUT", "180"))
+KR_IMAGE_POLL_INTERVAL = float(os.getenv("KR_IMAGE_POLL_INTERVAL", "3"))
 VIDEO_POLL_TIMEOUT = float(os.getenv("VIDEO_POLL_TIMEOUT", "1800"))
 ONLINE_IMAGE_PROMPT_MAX_LENGTH = int(os.getenv("ONLINE_IMAGE_PROMPT_MAX_LENGTH", "20000"))
 VIDEO_PROMPT_MAX_LENGTH = int(os.getenv("VIDEO_PROMPT_MAX_LENGTH", "4000"))
@@ -300,6 +308,20 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
         status_code=422,
         content={"detail": friendly_validation_error(exc.errors()), "errors": exc.errors()},
     )
+
+@app.middleware("http")
+async def public_share_guard(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    config = load_share_config()
+    if not (config.get("protect_public_root") and share_is_configured(config) and not request_is_admin(request)):
+        return await call_next(request)
+    path = request.url.path
+    if path == "/":
+        return RedirectResponse(url="/canvas")
+    if public_site_path_allowed(request.method.upper(), path):
+        return await call_next(request)
+    return JSONResponse(status_code=403, content={"detail": "公开画布网站模式已开启，当前接口不允许从公网访问"})
 
 def model_list(env_name, primary, defaults):
     configured = os.getenv(env_name, "")
@@ -510,6 +532,195 @@ def public_provider(provider):
         "key_env": provider_key_env(provider["id"]),
     }
 
+def load_share_config():
+    if not os.path.exists(SHARE_CONFIG_FILE):
+        return {
+            "enabled": False,
+            "protect_public_root": False,
+            "password_hash": "",
+            "token_secret": secrets.token_hex(32),
+            "token_ttl": 7 * 24 * 60 * 60,
+        }
+    try:
+        with SHARE_CONFIG_LOCK:
+            with open(SHARE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data.setdefault("enabled", False)
+        data.setdefault("protect_public_root", False)
+        data.setdefault("password_hash", "")
+        data.setdefault("token_secret", secrets.token_hex(32))
+        data.setdefault("token_ttl", 7 * 24 * 60 * 60)
+        return data
+    except Exception as e:
+        print(f"加载分享配置失败: {e}")
+        return {
+            "enabled": False,
+            "protect_public_root": False,
+            "password_hash": "",
+            "token_secret": secrets.token_hex(32),
+            "token_ttl": 7 * 24 * 60 * 60,
+        }
+
+def save_share_config(config):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with SHARE_CONFIG_LOCK:
+        with open(SHARE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+def password_hash(password):
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return f"sha256:{salt}:{digest}"
+
+def verify_password(password, stored_hash):
+    if not stored_hash:
+        return False
+    try:
+        scheme, salt, digest = stored_hash.split(":", 2)
+    except ValueError:
+        return False
+    if scheme != "sha256":
+        return False
+    candidate = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return hmac.compare_digest(candidate, digest)
+
+def sign_share_token(canvas_id, expires_at, secret):
+    msg = f"{canvas_id}:{int(expires_at)}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+def make_share_token(canvas_id, config):
+    expires_at = int(time.time() + int(config.get("token_ttl") or 7 * 24 * 60 * 60))
+    signature = sign_share_token(canvas_id, expires_at, config["token_secret"])
+    raw = f"{canvas_id}:{expires_at}:{signature}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+def parse_share_token(token, config, canvas_id=""):
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        token_canvas_id, expires_text, signature = decoded.rsplit(":", 2)
+        expires_at = int(expires_text)
+    except Exception:
+        raise HTTPException(status_code=401, detail="分享登录已失效，请重新输入密码")
+    if canvas_id and token_canvas_id != canvas_id:
+        raise HTTPException(status_code=403, detail="无权访问这个画布")
+    if expires_at < int(time.time()):
+        raise HTTPException(status_code=401, detail="分享登录已过期，请重新输入密码")
+    expected = sign_share_token(token_canvas_id, expires_at, config["token_secret"])
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="分享登录无效，请重新输入密码")
+    return token_canvas_id
+
+def share_is_configured(config=None):
+    config = config or load_share_config()
+    return bool(config.get("enabled") and config.get("password_hash") and config.get("token_secret"))
+
+def require_share_canvas_token(canvas_id, authorization=""):
+    config = load_share_config()
+    if not share_is_configured(config):
+        raise HTTPException(status_code=403, detail="分享访问还没有开启")
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="请先输入分享密码")
+    parse_share_token(token.strip(), config, canvas_id)
+    return config
+
+def is_local_or_lan_host(host):
+    host = (host or "").split("%", 1)[0]
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+def hostname_from_header(value):
+    text = (value or "").split(",", 1)[0].strip()
+    if text.startswith("["):
+        return text[1:].split("]", 1)[0]
+    if text.count(":") <= 1 and ":" in text:
+        return text.rsplit(":", 1)[0]
+    return text
+
+def request_is_local_or_lan(request: Request):
+    client_host = (request.client.host if request.client else "") or ""
+    header_host = hostname_from_header(request.headers.get("x-forwarded-host") or request.headers.get("host") or "")
+    return is_local_or_lan_host(client_host) and (not header_host or is_local_or_lan_host(header_host))
+
+def request_is_admin(request: Request):
+    host = hostname_from_header(request.headers.get("host") or "")
+    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("localhost:")
+
+def safe_visitor_id(value: str):
+    text = re.sub(r"[^a-zA-Z0-9_-]", "", value or "")[:80]
+    if not text:
+        raise HTTPException(status_code=401, detail="Missing visitor id")
+    return text
+
+def request_owner_id(request: Request):
+    if request_is_admin(request):
+        return ""
+    return safe_visitor_id(request.headers.get("x-visitor-id", ""))
+
+def visitor_canvas_title(title: str):
+    text = re.sub(r"\s+", " ", title or "").strip()
+    return text[:80] or "新建画布"
+
+def public_site_path_allowed(method: str, path: str):
+    allowed_exact = {
+        "/canvas",
+        "/share",
+        "/static/index.html",
+        "/static/canvas.html",
+        "/static/share.html",
+        "/static/theme.css",
+        "/static/theme.js",
+        "/static/i18n.js",
+        "/static/logo.png",
+        "/favicon.ico",
+    }
+    if path in allowed_exact:
+        return True
+    if path.startswith(("/assets/", "/output/")):
+        return True
+    if path.startswith("/api/share/") or path == "/ws/stats":
+        return True
+    public_get = {
+        "/api/config",
+        "/api/models",
+        "/api/workflows",
+        "/api/view",
+        "/api/queue_status",
+        "/api/canvases",
+        "/api/canvases/trash",
+        "/api/visitor/canvas",
+        "/api/download-output",
+    }
+    public_post = {
+        "/api/visitor/canvas",
+        "/api/canvases",
+        "/api/upload",
+        "/api/ai/upload",
+        "/api/canvas-assets/check",
+        "/api/canvas-assets/download",
+        "/api/canvas-image-tasks",
+        "/api/canvas-video",
+        "/api/canvas-llm",
+        "/api/angle/generate",
+        "/api/angle/poll_status",
+        "/api/ms/generate",
+        "/api/generate",
+        "/generate",
+    }
+    if method == "GET":
+        return path in public_get or path.startswith("/api/canvases/") or path.startswith("/api/canvas-image-tasks/") or path.startswith("/api/workflows/")
+    if method == "POST":
+        return path in public_post or path.endswith("/restore") or path.startswith("/api/workflows/") and path.endswith("/run")
+    if method in {"PUT", "DELETE"}:
+        return path.startswith("/api/canvases/")
+    return False
+
 def get_primary_provider_id(providers=None):
     """返回当前首选 provider 的 id；优先 primary=True 的，否则取第一个非 modelscope 的，再次取第一个。"""
     providers = providers if providers is not None else load_api_providers()
@@ -696,6 +907,19 @@ class MsGenerateRequest(BaseModel):
     loras: Optional[Any] = None
     client_id: Optional[str] = None
 
+class KrapiEnhanceRequest(BaseModel):
+    image_url: str = ""
+    provider: str = "krapi-cn"
+    model: str = "gpt-image-2"
+    prompt: str = "masterpiece, best quality, ultra-detailed, high resolution"
+    strength: float = 0.5
+    upscale: bool = False
+    upscale_resolution: int = 2048
+    resolution: int = 1024
+    ratio: str = "1:1"
+    count: int = 1
+    client_id: str = ""
+
 class CanvasLLMRequest(BaseModel):
     message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
     system_prompt: str = "You are a helpful assistant."
@@ -721,6 +945,19 @@ class CanvasSaveRequest(BaseModel):
     logs: List[Dict[str, Any]] = []
     client_id: str = ""
     base_updated_at: int = 0
+
+class VisitorCanvasRequest(BaseModel):
+    title: str = "新建画布"
+    icon: str = "layers"
+
+class ShareLoginRequest(BaseModel):
+    canvas_id: str = ""
+    password: str = ""
+
+class ShareConfigRequest(BaseModel):
+    enabled: bool = True
+    password: str = ""
+    protect_public_root: bool = True
 
 class CanvasAssetCheckRequest(BaseModel):
     urls: List[str] = []
@@ -970,6 +1207,26 @@ def load_canvas_any(canvas_id):
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+def assign_canvas_owner(canvas, owner_id=""):
+    owner = owner_id or ""
+    if owner:
+        canvas["owner_id"] = owner
+        if canvas.get("icon") == "laye":
+            canvas["icon"] = "layers"
+        save_canvas(canvas)
+    return canvas
+
+def require_canvas_owner(canvas, owner_id=""):
+    if owner_id and (canvas.get("owner_id") or "") != owner_id:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return canvas
+
+def load_owned_canvas(canvas_id, owner_id=""):
+    return require_canvas_owner(load_canvas(canvas_id), owner_id)
+
+def load_owned_canvas_any(canvas_id, owner_id=""):
+    return require_canvas_owner(load_canvas_any(canvas_id), owner_id)
+
 def canvas_record(data):
     return {
         "id": data.get("id"),
@@ -997,7 +1254,7 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
 
-def iter_canvas_records(include_deleted=False):
+def iter_canvas_records(include_deleted=False, owner_id=""):
     cleanup_expired_canvas_trash()
     records = []
     for filename in os.listdir(CANVAS_DIR):
@@ -1008,18 +1265,20 @@ def iter_canvas_records(include_deleted=False):
                 data = json.load(f)
         except Exception:
             continue
+        if owner_id and (data.get("owner_id") or "") != owner_id:
+            continue
         is_deleted = bool(data.get("deleted_at"))
         if include_deleted != is_deleted:
             continue
         records.append(canvas_record(data))
     return records
 
-def list_canvases():
-    records = iter_canvas_records(include_deleted=False)
+def list_canvases(owner_id=""):
+    records = iter_canvas_records(include_deleted=False, owner_id=owner_id)
     return sorted(records, key=lambda item: item["updated_at"], reverse=True)
 
-def list_deleted_canvases():
-    records = iter_canvas_records(include_deleted=True)
+def list_deleted_canvases(owner_id=""):
+    records = iter_canvas_records(include_deleted=True, owner_id=owner_id)
     return sorted(records, key=lambda item: item["deleted_at"], reverse=True)
 
 def display_title(text):
@@ -1064,7 +1323,8 @@ def selected_model(requested, fallback):
     model = (requested or fallback).strip()
     if not model:
         raise HTTPException(status_code=400, detail="模型名称不能为空")
-    if len(model) > 120 or not re.fullmatch(r"[a-zA-Z0-9_.:/+-]+", model):
+    # 允许中转站使用中文/特殊符号模型名（如【T】香蕉pro），仅限制长度与控制字符
+    if len(model) > 120 or any(ord(ch) < 32 for ch in model):
         raise HTTPException(status_code=400, detail=f"模型名称不合法：{model}")
     return model
 
@@ -1145,6 +1405,22 @@ def extract_task_id(data):
         return str(data["task_id"])
     if data.get("id") and str(data.get("id", "")).startswith("task"):
         return str(data["id"])
+    # KR API: task_id may be nested in choices[0].message.content JSON string
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    if parsed.get("task_id"):
+                        return str(parsed["task_id"])
+                    if isinstance(parsed.get("async_task"), dict) and parsed["async_task"].get("task_id"):
+                        return str(parsed["async_task"]["task_id"])
+            except Exception:
+                pass
     nested = data.get("data")
     if isinstance(nested, list) and nested:
         first = nested[0]
@@ -1154,6 +1430,43 @@ def extract_task_id(data):
         return extract_task_id(nested)
     return None
 
+def extract_query_url(data):
+    """提取 query_url，用于 krapi.cn 等返回自定义轮询地址的平台"""
+    if data.get("query_url"):
+        return str(data["query_url"])
+    # KR API: query_url may be nested in choices[0].message.content JSON string
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    if parsed.get("query_url"):
+                        return str(parsed["query_url"])
+                    if isinstance(parsed.get("async_task"), dict) and parsed["async_task"].get("query_url"):
+                        return str(parsed["async_task"]["query_url"])
+            except Exception:
+                pass
+    nested = data.get("async_task")
+    if isinstance(nested, dict):
+        if nested.get("query_url"):
+            return str(nested["query_url"])
+    nested = data.get("data")
+    if isinstance(nested, dict) and nested.get("query_url"):
+        return str(nested["query_url"])
+    return None
+
+def normalize_query_url(url: str) -> str:
+    val = str(url or "").strip()
+    if not val:
+        return ""
+    # Some gateways return malformed scheme like "https//..."
+    val = re.sub(r"^(https?)//", r"\1://", val, flags=re.IGNORECASE)
+    return val
+
 def provider_protocol(provider):
     return str((provider or {}).get("protocol") or "openai").strip().lower()
 
@@ -1161,37 +1474,246 @@ def is_apimart_provider(provider):
     base_url = str((provider or {}).get("base_url") or "").lower()
     return provider_protocol(provider) == "apimart" or "apimart.ai" in base_url
 
-async def wait_for_image_task(client, task_id, provider=None):
+def is_krapi_provider(provider):
+    pid = str((provider or {}).get("id") or "").lower()
+    base_url = str((provider or {}).get("base_url") or "").lower()
+    return pid.startswith("krapi") or "krapi.cn" in base_url
+
+def to_krapi_aspect_ratio(size: str) -> str:
+    width, height = parse_size_pair(size)
+    if not width or not height:
+        return "1:1"
+    common = [
+        (1, 1, "1:1"), (2, 3, "2:3"), (3, 2, "3:2"), (3, 4, "3:4"),
+        (4, 3, "4:3"), (4, 5, "4:5"), (5, 4, "5:4"), (9, 16, "9:16"),
+        (16, 9, "16:9"), (21, 9, "21:9"),
+    ]
+    ratio = width / max(1, height)
+    best = min(common, key=lambda item: abs(ratio - (item[0] / item[1])))
+    return best[2]
+
+def to_krapi_image_size(size: str) -> str:
+    width, height = parse_size_pair(size)
+    edge = max(width, height)
+    if edge >= 3000:
+        return "4K"
+    if edge >= 1800:
+        return "2K"
+    return "1K"
+
+def krapi_model_to_grsai(model: str) -> str:
+    m = str(model or "").strip().lower()
+    mapping = {
+        "【t】香蕉pro": "nano-banana-pro",
+        "[t] 香蕉pro": "nano-banana-pro",
+        "[t]香蕉pro": "nano-banana-pro",
+        "香蕉pro": "nano-banana-pro",
+        "【t】香蕉2": "nano-banana-2",
+        "[t] 香蕉2": "nano-banana-2",
+        "[t]香蕉2": "nano-banana-2",
+        "香蕉2": "nano-banana-2",
+        "nano-banana-pro-1k": "nano-banana-pro",
+        "nano-banana-pro-2k": "nano-banana-pro",
+        "nano-banana-pro-4k": "nano-banana-pro",
+        "nano-banana2-1k": "nano-banana-2",
+        "nano-banana2-2k": "nano-banana-2",
+        "nano-banana2-4k": "nano-banana-2",
+    }
+    return mapping.get(m, model)
+
+def normalize_krapi_banana_model(model: str) -> str:
+    m = str(model or "").strip()
+    lower = m.lower()
+    if lower in {"【t】香蕉pro", "[t] 香蕉pro", "[t]香蕉pro", "香蕉pro"}:
+        return "nano-banana-pro"
+    if lower in {"【t】香蕉2", "[t] 香蕉2", "[t]香蕉2", "香蕉2"}:
+        return "nano-banana-2"
+    if lower.startswith("nano-banana-pro"):
+        return "nano-banana-pro"
+    if lower.startswith("nano-banana2") or lower.startswith("nano-banana-2"):
+        return "nano-banana-2"
+    return m
+
+def is_krapi_banana_model(model: str) -> bool:
+    original = str(model or "").strip().lower()
+    normalized = normalize_krapi_banana_model(model).lower()
+    return normalized.startswith("nano-banana") or "香蕉" in original or "棣欒晧" in original
+
+def krapi_banana_model_candidates(model: str) -> List[str]:
+    original = str(model or "").strip()
+    normalized = normalize_krapi_banana_model(model)
+    candidates = []
+    for item in [normalized, original]:
+        if item and item not in candidates:
+            candidates.append(item)
+    lower = original.lower()
+    if "pro" in lower and "nano-banana-pro" not in candidates:
+        candidates.append("nano-banana-pro")
+    if ("香蕉2" in original or "棣欒晧2" in original or "banana2" in lower or "banana-2" in lower) and "nano-banana-2" not in candidates:
+        candidates.append("nano-banana-2")
+    return [item for item in candidates if str(item or "").strip()]
+
+def krapi_default_image_model(provider: dict) -> str:
+    for item in (provider.get("image_models") or []):
+        text = str(item or "").strip()
+        if text:
+            return text
+    return "【T】香蕉pro"
+
+def submit_krapi_comfy_image_request(provider: dict, prompt: str, size_value: str, model_name: str, refs: List[dict]) -> dict:
+    base_url = (provider.get("base_url") or "").rstrip("/")
+    api_key = os.getenv(provider_key_env(provider["id"]), "")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    normalized_model = normalize_krapi_banana_model(model_name)
+    if refs:
+        opened = []
+        files = []
+        try:
+            for idx, ref in enumerate(refs[:4], start=1):
+                path = output_file_from_url(ref.get("url", ""))
+                if not path:
+                    continue
+                fh = open(path, "rb")
+                opened.append(fh)
+                files.append(("image", (f"image_{idx}.png", fh, content_type_for_path(path))))
+            data = {"prompt": str(prompt or ""), "model": str(normalized_model or ""), "size": str(size_value or "1024x1024"), "n": "1"}
+            response = requests.post(
+                f"{base_url}/v1/images/edits",
+                headers=headers,
+                params={"async": "true"},
+                data=data,
+                files=files,
+                timeout=(30, 180),
+            )
+        finally:
+            for fh in opened:
+                fh.close()
+    else:
+        payload = {"prompt": str(prompt or ""), "model": str(normalized_model or ""), "size": str(size_value or "1024x1024"), "n": 1}
+        response = requests.post(
+            f"{base_url}/v1/images/generations",
+            headers={**headers, "Content-Type": "application/json", "Accept": "application/json"},
+            params={"async": "true"},
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            timeout=(30, 180),
+        )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=f"KR 图片接口提交失败：{(response.text or '')[:1200]}")
+    try:
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"KR 图片接口响应不是 JSON：{(response.text or '')[:800]}") from exc
+
+def fallback_grsai_provider_id() -> str:
+    providers = load_api_providers()
+    hit = next((p for p in providers if p.get("enabled", True) and is_grsai_provider(p)), None)
+    return hit.get("id") if hit else ""
+
+def is_grsai_provider(provider):
+    base_url = str((provider or {}).get("base_url") or "").lower()
+    pid = str((provider or {}).get("id") or "").lower()
+    return (
+        "grsaiapi.com" in base_url
+        or "grsai.dakka.com.cn" in base_url
+        or pid.startswith("grsai")
+    )
+
+def to_grsai_aspect_ratio(size: str) -> str:
+    width, height = parse_size_pair(size)
+    if not width or not height:
+        return "1:1"
+    common = [
+        (1, 1, "1:1"), (16, 9, "16:9"), (9, 16, "9:16"), (4, 3, "4:3"),
+        (3, 4, "3:4"), (3, 2, "3:2"), (2, 3, "2:3"), (5, 4, "5:4"),
+        (4, 5, "4:5"), (21, 9, "21:9"),
+    ]
+    ratio = width / max(1, height)
+    best = min(common, key=lambda item: abs(ratio - (item[0] / item[1])))
+    return best[2]
+
+def to_grsai_image_size(size: str) -> str:
+    width, height = parse_size_pair(size)
+    edge = max(width, height)
+    if edge >= 3000:
+        return "4K"
+    if edge >= 1800:
+        return "2K"
+    return "1K"
+
+async def wait_for_image_task(client, task_id, provider=None, query_url=None, timeout_override=None, interval_override=None):
     base_url = (provider.get("base_url") if provider else AI_BASE_URL).rstrip("/")
     is_apimart = is_apimart_provider(provider)
-    if is_apimart:
+    # 优先使用 query_url（krapi.cn 等平台返回）
+    if query_url:
+        task_url = normalize_query_url(query_url)
+        print(f"[DEBUG] Using query_url: {task_url}")
+    elif is_apimart:
         task_url = f"{base_url}/tasks/{task_id}" if base_url.endswith("/v1") else f"{base_url}/v1/tasks/{task_id}"
     else:
         task_url = f"{base_url}/images/tasks/{task_id}" if base_url.endswith("/v1") else f"{base_url}/v1/images/tasks/{task_id}"
-    timeout = APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT
-    interval = APIMART_IMAGE_POLL_INTERVAL if is_apimart else IMAGE_POLL_INTERVAL
+    timeout = float(timeout_override) if timeout_override is not None else (APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT)
+    interval = float(interval_override) if interval_override is not None else (APIMART_IMAGE_POLL_INTERVAL if is_apimart else IMAGE_POLL_INTERVAL)
     initial_delay = APIMART_IMAGE_INITIAL_POLL_DELAY if is_apimart else 0
     deadline = time.monotonic() + timeout
     last_payload = {}
+    candidate_urls = [task_url]
+    if "/task/" in task_url:
+        candidate_urls.append(task_url.replace("/task/", "/tasks/"))
+    elif "/tasks/" in task_url:
+        candidate_urls.append(task_url.replace("/tasks/", "/task/"))
+    candidate_urls = [u for i, u in enumerate(candidate_urls) if u and u not in candidate_urls[:i]]
+    kr_mode = is_krapi_provider(provider)
+
     while time.monotonic() < deadline:
         if initial_delay:
             await asyncio.sleep(min(initial_delay, max(0.0, deadline - time.monotonic())))
             initial_delay = 0
             if time.monotonic() >= deadline:
                 break
-        response = await client.get(task_url, headers=api_headers(provider=provider))
-        response.raise_for_status()
+        last_exc = None
+        response = None
+        used_url = task_url
+        for poll_url in candidate_urls:
+            used_url = poll_url
+            try:
+                headers = api_headers(provider=provider)
+                # KR 查询接口无鉴权且容易被缓存，追加时间戳避免拿到陈旧 processing 状态
+                poll_final = f"{poll_url}{'&' if '?' in poll_url else '?'}_ts={int(time.time()*1000)}" if kr_mode else poll_url
+                resp = await client.get(poll_final, headers=headers)
+                print(f"[DEBUG] Poll status: {resp.status_code}, url: {poll_url}")
+                resp.raise_for_status()
+                response = resp
+                task_url = poll_url
+                break
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                continue
+        if response is None and last_exc:
+            raise last_exc
+        if response is None:
+            raise HTTPException(status_code=502, detail=f"任务轮询失败：未拿到有效响应，query={used_url}")
         last_payload = response.json()
-        task_data = last_payload.get("data") if isinstance(last_payload.get("data"), dict) else last_payload
+        # krapi 的 status/completed 在顶层，不在 data 里
+        task_data = last_payload if "status" in last_payload else (last_payload.get("data") if isinstance(last_payload.get("data"), dict) else last_payload)
         status = str(task_data.get("status", "")).upper()
-        if status in {"SUCCESS", "COMPLETED"}:
+        print(f"[DEBUG] Task status: {status}")
+        if status in {"SUCCESS", "COMPLETED", "DONE", "SUCCEEDED"}:
             return last_payload
-        if status in {"FAILURE", "FAILED", "ERROR"}:
+        # KR task states
+        if status in {"SUBMITTED", "PROCESSING", "RUNNING", "PENDING"}:
+            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            continue
+        if status in {"FAILURE", "FAILED", "ERROR", "VIOLATION", "NOT_FOUND_OR_EXPIRED", "NOT_FOUND", "CANCELED", "CANCELLED"}:
             error = task_data.get("error") if isinstance(task_data.get("error"), dict) else {}
             reason = task_data.get("fail_reason") or error.get("message") or last_payload.get("message") or "生图任务失败"
-            raise HTTPException(status_code=502, detail=f"生图任务失败：{reason}")
+            payload_preview = json.dumps(last_payload, ensure_ascii=False)[:600]
+            print(f"[DEBUG] Task failed. reason={reason}, last_payload={last_payload}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"生图任务失败：{reason}（task_id={task_id}，query={task_url}，raw={payload_preview}）"
+            )
         await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
-    raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}")
+    raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}，query={task_url}")
 
 def output_storage(category="output"):
     return (OUTPUT_INPUT_DIR, "input") if category == "input" else (OUTPUT_OUTPUT_DIR, "output")
@@ -1292,6 +1814,48 @@ def reference_to_data_url(ref, max_size=None):
     with open(path, "rb") as f:
         encoded = base64.b64encode(f.read()).decode("ascii")
     return f"data:{content_type_for_path(path)};base64,{encoded}"
+
+def strip_data_url_prefix(value: str) -> str:
+    text = str(value or "")
+    if ";base64," in text:
+        return text.split(";base64,", 1)[1]
+    return text
+
+async def wait_for_openai_image_task(client, task_id, provider=None, timeout_override=None, interval_override=None, submit_payload=None):
+    base_url = (provider.get("base_url") if provider else AI_BASE_URL).rstrip("/")
+    submit_query_url = extract_query_url(submit_payload or {})
+    image_task_url = submit_query_url or (f"{base_url}/images/tasks/{task_id}" if base_url.endswith("/v1") else f"{base_url}/v1/images/tasks/{task_id}")
+    timeout = float(timeout_override) if timeout_override is not None else IMAGE_TASK_TIMEOUT
+    interval = float(interval_override) if interval_override is not None else IMAGE_POLL_INTERVAL
+    deadline = time.monotonic() + timeout
+    last_payload = {}
+    last_status_code = None
+    last_text = ""
+    while time.monotonic() < deadline:
+        headers = {} if "krnorth.top" in image_task_url else api_headers(provider=provider)
+        resp = await client.get(image_task_url, headers=headers)
+        last_status_code = resp.status_code
+        last_text = resp.text[:500]
+        if resp.status_code != 200:
+            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            continue
+        try:
+            last_payload = resp.json()
+        except Exception:
+            last_payload = {"raw_text": resp.text[:800]}
+        task_data = last_payload.get("data") if isinstance(last_payload.get("data"), dict) else last_payload
+        status = str(task_data.get("status") or last_payload.get("status") or "").lower()
+        payload = task_data.get("data") if isinstance(task_data.get("data"), dict) else task_data
+        if status in {"success", "completed", "done", "finished", "succeeded"}:
+            return payload
+        if status in {"submitted", "processing", "running", "pending"}:
+            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            continue
+        if status in {"failed", "error", "failure", "violation", "not_found_or_expired"}:
+            raise HTTPException(status_code=502, detail=f"生图任务失败：{json.dumps(last_payload, ensure_ascii=False)[:800]}")
+        await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+    submit_preview = json.dumps(submit_payload or {}, ensure_ascii=False)[:800]
+    raise HTTPException(status_code=504, detail=f"生图任务超时（已等待 {int(timeout)} 秒），task_id={task_id}，query={image_task_url}，last_status={last_status_code}，last_body={last_text}，raw={json.dumps(last_payload, ensure_ascii=False)[:800]}，submit_raw={submit_preview}")
 
 def compress_data_url_image(value, max_size=1536, jpeg_quality=88):
     if not isinstance(value, str) or not value.startswith("data:image/") or ";base64," not in value:
@@ -1602,8 +2166,183 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     provider = get_api_provider(provider_id)
     if provider["id"] == "modelscope":
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
+    if is_grsai_provider(provider):
+        base_url = (provider.get("base_url") or "").rstrip("/")
+        if not base_url:
+            raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
+        submit_url = f"{base_url}/v1/api/generate"
+        body = {
+            "model": model,
+            "prompt": (prompt or "").strip(),
+            "images": [reference_to_data_url(ref, max_size=1536) for ref in (reference_images or []) if ref.get("url")][:4],
+            "aspectRatio": to_grsai_aspect_ratio(size),
+            "imageSize": to_grsai_image_size(size),
+            "replyType": "json",
+        }
+        if not body["images"]:
+            body.pop("images", None)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=600.0, write=120.0, pool=20.0)) as client:
+            try:
+                resp = await client.post(submit_url, headers=api_headers(provider=provider), json=body)
+                resp.raise_for_status()
+                raw = resp.json()
+            except httpx.HTTPStatusError as exc:
+                text = exc.response.text[:1200]
+                raise HTTPException(status_code=exc.response.status_code, detail=f"GRSAI 上游错误：{text}") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"GRSAI 请求失败：{exc}") from exc
+            status = str(raw.get("status") or "").lower()
+            if status in {"succeeded", "success", "completed"}:
+                results = raw.get("results") or []
+                if results and isinstance(results[0], dict) and results[0].get("url"):
+                    return {"type": "url", "value": results[0]["url"]}, raw
+                raise HTTPException(status_code=502, detail=f"GRSAI 成功但无结果 URL：{raw}")
+            if status in {"failed", "violation", "error"}:
+                reason = raw.get("error") or raw.get("message") or "生图任务失败"
+                raise HTTPException(status_code=502, detail=f"生图任务失败：{reason}")
+            # 某些实现 json 模式仍可能先返回 running，这里明确提示避免无限扣费重试
+            if status in {"running", "pending"}:
+                task_id = raw.get("id") or raw.get("task_id") or ""
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"GRSAI 任务仍在进行中（status={status}, task_id={task_id}）。该平台 json 模式未返回最终结果，请联系平台确认同步返回能力。"
+                )
+            raise HTTPException(status_code=502, detail=f"无法识别 GRSAI 返回：{raw}")
+    if is_krapi_provider(provider):
+        base_url = (provider.get("base_url") or "").rstrip("/")
+        if not base_url:
+            raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
+        # ——— GPT 通道：gpt-image-2 → /v1/images/generations（同步，无 async）———
+        if is_gpt_image_2_model(model):
+            refs = [ref for ref in (reference_images or []) if ref.get("url")]
+            size_val = normalize_gpt_image_2_size(size)
+            body = {
+                "model": "gpt-image-2",
+                "prompt": (prompt or "").strip(),
+                "size": size_val,
+                "n": 1,
+                "quality": quality or "standard",
+                "output_format": "png",
+            }
+            if refs:
+                body["images"] = [{"image_url": reference_to_data_url(ref, max_size=1536)} for ref in refs[:4]]
+                submit_url = f"{base_url}/v1/images/edits"
+            else:
+                submit_url = f"{base_url}/v1/images/generations"
+            request_timeout = httpx.Timeout(connect=20.0, read=180.0, write=120.0, pool=20.0)
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                try:
+                    resp = await client.post(submit_url, headers=api_headers(provider=provider), json=body)
+                    resp.raise_for_status()
+                    raw = resp.json()
+                except httpx.HTTPStatusError as exc:
+                    text = exc.response.text[:1200]
+                    raise HTTPException(status_code=exc.response.status_code, detail=f"KR GPT 请求失败：{text}") from exc
+                except httpx.HTTPError as exc:
+                    raise HTTPException(status_code=502, detail=f"KR GPT 请求失败：{exc}") from exc
+            # 同步接口可能直接返回图片，也可能返回 task_id
+            task_id = extract_task_id(raw)
+            if task_id:
+                async with httpx.AsyncClient(timeout=request_timeout) as poll_client:
+                    raw = await wait_for_openai_image_task(
+                        poll_client, task_id, provider,
+                        timeout_override=KR_IMAGE_TASK_TIMEOUT,
+                        interval_override=KR_IMAGE_POLL_INTERVAL,
+                        submit_payload=raw,
+                    )
+            try:
+                return extract_image(raw), raw
+            except HTTPException:
+                raise HTTPException(status_code=502, detail=f"KR GPT 未返回可用结果：{json.dumps(raw, ensure_ascii=False)[:800]}")
+        # ——— Gemini 通道：香蕉模型等 → /v1/chat/completions ———
+        refs = [ref for ref in (reference_images or []) if ref.get("url")]
+        text_prompt = (prompt or "").strip()
+        # KR AI 中 Banana Pro 对应的实际模型 ID，不是显示名
+        model_candidates = [
+            normalize_krapi_banana_model(model),    # -> nano-banana-pro
+            model,                                    # -> 【T】香蕉pro
+            "gemini-3-pro-image-preview",             # Kr AI Banana Pro 的实际 modelId
+            "gemini-3.1-pro-preview",                 # Kr AI nano-bananao-pro 的实际 modelId
+        ]
+        # 去重去空
+        seen = set()
+        model_list = []
+        for m in model_candidates:
+            m = str(m or "").strip()
+            if m and m not in seen:
+                seen.add(m)
+                model_list.append(m)
+        if refs:
+            content_parts = []
+            for ref in refs[:4]:
+                url = reference_to_data_url(ref, max_size=1536)
+                if url:
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+            content_parts.append({"type": "text", "text": text_prompt})
+            messages = [{"role": "user", "content": content_parts}]
+        else:
+            messages = [{"role": "user", "content": text_prompt}]
+        request_timeout = httpx.Timeout(connect=20.0, read=120.0, write=120.0, pool=20.0)
+        submit_url = f"{base_url}/v1/chat/completions"
+        last_error = None
+        raw = None
+        for actual_model in model_list:
+            body = {
+                "model": actual_model,
+                "messages": messages,
+                "aspect_ratio": to_krapi_aspect_ratio(size),
+                "image_size": to_krapi_image_size(size),
+            }
+            if quality:
+                body["quality"] = quality
+            try:
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                    response = await client.post(submit_url, headers=api_headers(provider=provider), json=body)
+                    response.raise_for_status()
+                    raw = response.json()
+                    raw["_used_model"] = actual_model
+                    break
+            except httpx.HTTPStatusError as exc:
+                text = exc.response.text[:1200]
+                last_error = f"KR 提交任务失败（model={actual_model}）：{text}"
+                if "model_not_found" in text or "No available channel" in text:
+                    continue
+                raise HTTPException(status_code=exc.response.status_code, detail=last_error) from exc
+            except httpx.HTTPError as exc:
+                last_error = f"KR 请求失败（model={actual_model}）：{exc}"
+                continue
+        if raw is None:
+            raise HTTPException(status_code=502, detail=last_error or "KR 所有模型候选均不可用")
+        # KR 文档：提交后通常返回 task_id/query_url，需要轮询
+        task_id = extract_task_id(raw)
+        query_url = extract_query_url(raw) or (f"https://ai.krnorth.top/task/{task_id}" if task_id else None)
+        if task_id:
+            async with httpx.AsyncClient(timeout=request_timeout) as poll_client:
+                task_result = await wait_for_image_task(
+                    poll_client, task_id, provider, query_url,
+                    timeout_override=KR_IMAGE_TASK_TIMEOUT,
+                    interval_override=KR_IMAGE_POLL_INTERVAL,
+                )
+            status = str(task_result.get("status") or "").lower()
+            if status == "completed":
+                if task_result.get("url"):
+                    return {"type": "url", "value": task_result["url"]}, task_result
+                urls = task_result.get("urls") or []
+                if isinstance(urls, list) and urls:
+                    return {"type": "url", "value": urls[0]}, task_result
+                raise HTTPException(status_code=502, detail=f"KR 任务完成但无图片 URL：{task_result}")
+            if status in {"failed", "error", "violation", "not_found_or_expired"}:
+                reason = task_result.get("error") or task_result.get("message") or "生图任务失败"
+                raise HTTPException(status_code=502, detail=f"生图任务失败：{reason}")
+        # 少数情况下直接返回图片
+        try:
+            return extract_image(raw), raw
+        except HTTPException:
+            raise HTTPException(status_code=502, detail=f"KR 未返回可用结果：{raw}")
     is_gpt2 = is_gpt_image_2_model(model)
     is_apimart = is_apimart_provider(provider)
+    # krapi.cn 平台使用标准格式，不用宽高比
+    is_krapi = is_krapi_provider(provider)
     if is_gpt_image_2_model(model) and not is_apimart:
         size = normalize_gpt_image_2_size(size)
     base_url = (provider.get("base_url") or AI_BASE_URL).rstrip("/")
@@ -1618,17 +2357,28 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
         if is_apimart:
-            apimart_size, resolution = apimart_size_resolution(size)
-            body = {
-                "model": model,
-                "prompt": prompt,
-                "n": 1,
-                "size": apimart_size,
-                "resolution": resolution.upper(),
-                "official_fallback": False,
-            }
-            if image_refs:
-                body["image_urls"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:14]]
+            # krapi.cn 平台使用标准尺寸格式，不用宽高比
+            if is_krapi:
+                body = {
+                    "model": model,
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": size,
+                }
+                if image_refs:
+                    body["image_urls"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:14]]
+            else:
+                apimart_size, resolution = apimart_size_resolution(size)
+                body = {
+                    "model": model,
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": apimart_size,
+                    "resolution": resolution.upper(),
+                    "official_fallback": False,
+                }
+                if image_refs:
+                    body["image_urls"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:14]]
             response = await client.post(gen_url, headers=api_headers(provider=provider), json=body)
         elif is_gpt2 and not mask_refs:
             body = {"model": model, "prompt": prompt, "size": size}
@@ -1693,9 +2443,19 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             return extract_image(raw), raw
         except HTTPException:
             task_id = extract_task_id(raw)
+            query_url = extract_query_url(raw)
             if not task_id:
                 raise
-        task_result = await wait_for_image_task(client, task_id, provider)
+            if is_krapi and not query_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "当前平台提交成功但返回了 task_id，且未提供可轮询的 query_url；"
+                        "该平台通常不支持 /v1/tasks 或 /v1/images/tasks 查询。"
+                        "请更换可直接返回图片的模型，或更换支持任务查询端点的平台。"
+                    ),
+                )
+        task_result = await wait_for_image_task(client, task_id, provider, query_url)
         return extract_image(task_result), task_result
 
 def upstream_message_from_record(item):
@@ -1715,8 +2475,19 @@ def upstream_message_from_record(item):
 # --- 路由接口 ---
 
 @app.get("/")
-async def index():
+async def index(request: Request):
+    config = load_share_config()
+    if config.get("protect_public_root") and share_is_configured(config) and not request_is_admin(request):
+        return RedirectResponse(url="/canvas")
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+@app.get("/canvas")
+async def public_canvas_page():
+    return FileResponse(os.path.join(STATIC_DIR, "canvas.html"))
+
+@app.get("/share")
+async def share_page():
+    return FileResponse(os.path.join(STATIC_DIR, "share.html"))
 
 @app.get("/api/view")
 def view_image(filename: str, type: str = "input", subfolder: str = ""):
@@ -1892,9 +2663,32 @@ async def test_provider_connection(payload: TestConnectionPayload):
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
     url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
+    is_grsai = ("grsaiapi.com" in base_url.lower()) or ("grsai.dakka.com.cn" in base_url.lower())
+    grsai_image_models = [
+        "nano-banana",
+        "nano-banana-fast",
+        "nano-banana-2",
+        "nano-banana-2-cl",
+        "nano-banana-2-4k-cl",
+        "nano-banana-pro",
+        "nano-banana-pro-cl",
+        "nano-banana-pro-vip",
+        "nano-banana-pro-4k-vip",
+    ]
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
+        if is_grsai and resp.status_code == 404:
+            return {
+                "ok": True,
+                "status": 404,
+                "model_count": len(grsai_image_models),
+                "image_models": grsai_image_models,
+                "chat_models": [],
+                "video_models": [],
+                "all": grsai_image_models,
+                "message": "GRSAI 平台不提供 /v1/models，已回退内置模型列表",
+            }
         if resp.status_code >= 400:
             return {"ok": False, "status": resp.status_code, "message": resp.text[:300]}
         data = resp.json() if resp.text else {}
@@ -2463,20 +3257,30 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
 # --- 画布管理 ---
 
 @app.get("/api/canvases")
-async def canvases():
-    return {"canvases": list_canvases()}
+async def canvases(request: Request):
+    return {"canvases": list_canvases(request_owner_id(request))}
 
 @app.get("/api/canvases/trash")
-async def trashed_canvases():
-    return {"canvases": list_deleted_canvases(), "retention_days": 30}
+async def trashed_canvases(request: Request):
+    return {"canvases": list_deleted_canvases(request_owner_id(request)), "retention_days": 30}
 
 @app.post("/api/canvases")
-async def create_canvas(payload: CanvasCreateRequest):
-    return {"canvas": new_canvas(payload.title, payload.icon)}
+async def create_canvas(payload: CanvasCreateRequest, request: Request):
+    canvas = assign_canvas_owner(new_canvas(payload.title, payload.icon), request_owner_id(request))
+    return {"canvas": canvas}
+
+@app.post("/api/visitor/canvas")
+async def create_visitor_canvas(payload: VisitorCanvasRequest, request: Request):
+    owner_id = safe_visitor_id(request.headers.get("x-visitor-id", ""))
+    existing = list_canvases(owner_id)
+    if existing:
+        return {"canvas": load_owned_canvas(existing[0]["id"], owner_id), "created": False}
+    canvas = assign_canvas_owner(new_canvas(visitor_canvas_title(payload.title), payload.icon), owner_id)
+    return {"canvas": canvas, "created": True}
 
 @app.get("/api/canvases/{canvas_id}/meta")
-async def get_canvas_meta(canvas_id: str):
-    canvas = load_canvas(canvas_id)
+async def get_canvas_meta(canvas_id: str, request: Request):
+    canvas = load_owned_canvas(canvas_id, request_owner_id(request))
     return {
         "id": canvas.get("id"),
         "updated_at": canvas.get("updated_at", 0),
@@ -2485,7 +3289,60 @@ async def get_canvas_meta(canvas_id: str):
     }
 
 @app.get("/api/canvases/{canvas_id}")
-async def get_canvas(canvas_id: str):
+async def get_canvas(canvas_id: str, request: Request):
+    return {"canvas": load_owned_canvas(canvas_id, request_owner_id(request))}
+
+@app.get("/api/share/status")
+async def share_status():
+    config = load_share_config()
+    return {
+        "enabled": share_is_configured(config),
+        "protect_public_root": bool(config.get("protect_public_root")),
+    }
+
+@app.put("/api/share/config")
+async def update_share_config(payload: ShareConfigRequest, request: Request):
+    if not request_is_local_or_lan(request):
+        raise HTTPException(status_code=403, detail="只能在本机修改分享设置")
+    config = load_share_config()
+    config["enabled"] = bool(payload.enabled)
+    config["protect_public_root"] = bool(payload.protect_public_root)
+    if payload.password:
+        if len(payload.password) < 4:
+            raise HTTPException(status_code=400, detail="分享密码至少 4 位")
+        config["password_hash"] = password_hash(payload.password)
+    if not config.get("password_hash") and config["enabled"]:
+        raise HTTPException(status_code=400, detail="开启分享前请先设置分享密码")
+    config["token_secret"] = config.get("token_secret") or secrets.token_hex(32)
+    config["token_ttl"] = int(config.get("token_ttl") or 7 * 24 * 60 * 60)
+    save_share_config(config)
+    return {"ok": True, "enabled": share_is_configured(config), "protect_public_root": bool(config.get("protect_public_root"))}
+
+@app.post("/api/share/login")
+async def share_login(payload: ShareLoginRequest):
+    config = load_share_config()
+    if not share_is_configured(config):
+        raise HTTPException(status_code=403, detail="分享访问还没有开启")
+    canvas = load_canvas(payload.canvas_id)
+    if not verify_password(payload.password, config.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="分享密码不正确")
+    token = make_share_token(canvas["id"], config)
+    return {"token": token, "canvas": canvas_record(canvas)}
+
+@app.get("/api/share/canvases/{canvas_id}/meta")
+async def get_shared_canvas_meta(canvas_id: str, authorization: str = Header(default="")):
+    require_share_canvas_token(canvas_id, authorization)
+    canvas = load_canvas(canvas_id)
+    return {
+        "id": canvas.get("id"),
+        "updated_at": canvas.get("updated_at", 0),
+        "title": canvas.get("title", "未命名画布"),
+        "icon": canvas.get("icon", "layers"),
+    }
+
+@app.get("/api/share/canvases/{canvas_id}")
+async def get_shared_canvas(canvas_id: str, authorization: str = Header(default="")):
+    require_share_canvas_token(canvas_id, authorization)
     return {"canvas": load_canvas(canvas_id)}
 
 @app.post("/api/canvas-assets/check")
@@ -2535,8 +3392,8 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
     return Response(buffer.getvalue(), media_type="application/zip", headers=headers)
 
 @app.put("/api/canvases/{canvas_id}")
-async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
-    canvas = load_canvas(canvas_id)
+async def update_canvas(canvas_id: str, payload: CanvasSaveRequest, request: Request):
+    canvas = load_owned_canvas(canvas_id, request_owner_id(request))
     current_updated_at = int(canvas.get("updated_at") or 0)
     if payload.base_updated_at and current_updated_at and int(payload.base_updated_at) < current_updated_at:
         raise HTTPException(status_code=409, detail={
@@ -2555,23 +3412,24 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     return {"canvas": canvas}
 
 @app.delete("/api/canvases/{canvas_id}")
-async def delete_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
+async def delete_canvas(canvas_id: str, request: Request):
+    canvas = load_owned_canvas_any(canvas_id, request_owner_id(request))
     if not canvas.get("deleted_at"):
         canvas["deleted_at"] = now_ms()
         save_canvas(canvas)
     return {"ok": True}
 
 @app.post("/api/canvases/{canvas_id}/restore")
-async def restore_canvas(canvas_id: str):
-    canvas = load_canvas_any(canvas_id)
+async def restore_canvas(canvas_id: str, request: Request):
+    canvas = load_owned_canvas_any(canvas_id, request_owner_id(request))
     if canvas.get("deleted_at"):
         canvas.pop("deleted_at", None)
         save_canvas(canvas)
     return {"canvas": canvas}
 
 @app.delete("/api/canvases/{canvas_id}/purge")
-async def purge_canvas(canvas_id: str):
+async def purge_canvas(canvas_id: str, request: Request):
+    load_owned_canvas_any(canvas_id, request_owner_id(request))
     path = canvas_path(canvas_id)
     if os.path.exists(path):
         os.remove(path)
@@ -2611,6 +3469,15 @@ async def chat(payload: ChatRequest, request: Request, x_user_id: str = Header(d
         try:
             image_data, raw = await generate_ai_image(payload.message, payload.size, payload.quality, model, refs, provider["id"])
             local_url = await save_ai_image_to_output(image_data, prefix="chat_")
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            # 兜底补充关键定位信息，防止上游空响应时前端只看到空白
+            if not detail or detail.endswith("："):
+                detail = (
+                    f"请求上游生图接口失败：provider={provider.get('id')} "
+                    f"model={model} base_url={provider.get('base_url')} status={exc.status_code}"
+                )
+            raise HTTPException(status_code=exc.status_code, detail=detail) from exc
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=exc.response.status_code, detail=f"上游生图接口错误：{exc.response.text}") from exc
         except httpx.HTTPError as exc:
@@ -3089,6 +3956,147 @@ async def generate_cloud(req: CloudGenRequest):
         raise
     except Exception as e:
         print(f"Cloud generation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- Krapi 图生图增强 ---
+
+@app.post("/api/enhance/krapi")
+async def krapi_enhance(req: KrapiEnhanceRequest):
+    try:
+        provider = get_api_provider("krapi-cn")
+        base_url = provider.get("base_url", "https://ai.krapi.cn").rstrip("/")
+        model = req.model.strip() or "gpt-image-2"
+        prompt = req.prompt.strip() or "masterpiece, best quality, ultra-detailed, high resolution"
+        strength = max(0.0, min(1.0, req.strength))
+
+        if not req.image_url:
+            raise HTTPException(status_code=400, detail="Missing image_url")
+
+        # Build reference from image_url
+        image_ref = {"url": req.image_url}
+        data_url = reference_to_data_url(image_ref, max_size=1536)
+
+        if is_gpt_image_2_model(model):
+            # GPT channel: /v1/images/edits
+            body = {
+                "model": "gpt-image-2",
+                "prompt": prompt,
+                "n": 1,
+                "output_format": "png",
+                "image": data_url,
+            }
+            size = "1024x1024"
+            if req.upscale and req.upscale_resolution > 0:
+                size = f"{req.upscale_resolution}x{req.upscale_resolution}"
+            body["size"] = size
+            submit_url = f"{base_url}/v1/images/edits"
+            request_timeout = httpx.Timeout(connect=20.0, read=180.0, write=120.0)
+
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                resp = await client.post(submit_url, headers=api_headers(provider=provider), json=body)
+                resp.raise_for_status()
+                raw = resp.json()
+
+            # Handle task_id if returned (async)
+            task_id = extract_task_id(raw)
+            if task_id:
+                async with httpx.AsyncClient(timeout=request_timeout) as poll_client:
+                    raw = await wait_for_openai_image_task(
+                        poll_client, task_id, provider,
+                        timeout_override=KR_IMAGE_TASK_TIMEOUT,
+                        interval_override=KR_IMAGE_POLL_INTERVAL,
+                        submit_payload=raw,
+                    )
+            try:
+                result = extract_image(raw)
+                img_url = result["value"]
+            except HTTPException:
+                raise HTTPException(status_code=502, detail=f"Krapi GPT enhance 未返回可用结果：{json.dumps(raw, ensure_ascii=False)[:800]}")
+        else:
+            # 香蕉系 / Gemini 通道：/v1/chat/completions
+            content_parts = [
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "text", "text": prompt}
+            ]
+            messages = [{"role": "user", "content": content_parts}]
+            actual_model = normalize_krapi_banana_model(model)
+            body = {
+                "model": actual_model,
+                "messages": messages,
+            }
+            submit_url = f"{base_url}/v1/chat/completions"
+            request_timeout = httpx.Timeout(connect=20.0, read=120.0, write=120.0)
+
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                resp = await client.post(submit_url, headers=api_headers(provider=provider), json=body)
+                resp.raise_for_status()
+                raw = resp.json()
+
+            # Handle task_id for async
+            task_id = extract_task_id(raw)
+            if task_id:
+                query_url = extract_query_url(raw) or (f"https://ai.krnorth.top/task/{task_id}" if task_id else None)
+                async with httpx.AsyncClient(timeout=request_timeout) as poll_client:
+                    task_result = await wait_for_image_task(
+                        poll_client, task_id, provider, query_url,
+                        timeout_override=KR_IMAGE_TASK_TIMEOUT,
+                        interval_override=KR_IMAGE_POLL_INTERVAL,
+                    )
+                status = str(task_result.get("status") or "").lower()
+                if status == "completed":
+                    if task_result.get("url"):
+                        img_url = task_result["url"]
+                    else:
+                        urls = task_result.get("urls") or []
+                        if isinstance(urls, list) and urls:
+                            img_url = urls[0]
+                        else:
+                            raise HTTPException(status_code=502, detail=f"Krapi task completed but no image URL: {task_result}")
+                elif status in {"failed", "error", "violation", "not_found_or_expired"}:
+                    reason = task_result.get("error") or task_result.get("message") or "生图任务失败"
+                    raise HTTPException(status_code=502, detail=f"Krapi enhance failed: {reason}")
+                else:
+                    raise HTTPException(status_code=502, detail=f"Krapi enhance unexpected status {status}: {task_result}")
+            else:
+                try:
+                    result = extract_image(raw)
+                    img_url = result["value"]
+                except HTTPException:
+                    raise HTTPException(status_code=502, detail=f"Krapi banana enhance 未返回可用结果：{json.dumps(raw, ensure_ascii=False)[:800]}")
+
+        # Download and save locally
+        local_url = img_url
+        try:
+            async with httpx.AsyncClient() as dl_client:
+                img_res = await dl_client.get(img_url)
+                if img_res.status_code == 200:
+                    filename = f"krapi_enhance_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
+                    file_path = output_path_for(filename, "output")
+                    with open(file_path, "wb") as f:
+                        f.write(img_res.content)
+                    local_url = output_url_for(filename, "output")
+        except Exception as dl_e:
+            print(f"Krapi enhance download error: {dl_e}")
+
+        result_data = {
+            "images": [local_url],
+            "params": {},
+            "timestamp": time.time(),
+        }
+
+        # Save to history
+        save_to_history(result_data)
+        try:
+            await manager.broadcast_new_image(result_data)
+        except Exception:
+            pass
+
+        return result_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Krapi enhance error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 # --- ModelScope 通用图片生成（支持图生图） ---

@@ -1,0 +1,35 @@
+# Secrets and local configuration
+API/.env
+global_config.json
+data/
+history.json
+
+# Runtime outputs and user uploads
+assets/
+output/
+
+# Local runtimes, dependency caches, and downloaded tools
+python/
+packages/
+get-pip.py
+tools/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Temporary extraction/build folders
+tmp-*/
+tmp-working-*/
+dist/
+build/
+
+# Logs
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

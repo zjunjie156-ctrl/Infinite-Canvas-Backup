@@ -18,6 +18,13 @@
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
     <script src="/static/theme.js?v=20260516-theme-sync"></script>
     <script src="/static/i18n.js?v=20260515-editor-zoom-undo"></script>
     <style>
@@ -114,7 +121,8 @@
         /* 一键运行按钮（与 Run 按钮同款大小，仅在链尾节点显示） */
         .gen-run-row { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
         .gen-run-row .gen-btn,
-        .gen-run-row .comfy-run { flex:0 0 40px; margin-top:0; }
+        .gen-run-row .comfy-run,
+        .gen-run-row .angle-run { flex:0 0 40px; margin-top:0; }
         .gen-run-row .llm-run { flex:0 0 36px; margin-top:0; }
         .video-node { width:380px; }
         .node.sized.video-node .generator-body { height:100%; display:flex; flex-direction:column; }
@@ -318,6 +326,27 @@
         .llm-node { width:420px; }
         .llm-body { display:flex; flex-direction:column; gap:10px; min-height:0; }
         .node.sized.llm-node .llm-body { height:100%; }
+        .angle-body { display:flex; flex-direction:column; gap:8px; min-height:0; padding:0; }
+        .node.sized.angle-node .angle-body { height:100%; }
+        .node.sized.angle-node .gen-run-row { margin-top:auto; }
+        .angle-three-wrap { width:100%; height:140px; background:#1e293b; border-radius:12px 12px 0 0; overflow:hidden; position:relative; }
+        .angle-three-placeholder { display:none; }
+        .angle-section { padding:0 12px; }
+        .angle-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--faint); margin-bottom:4px; }
+        .angle-slider-row { display:flex; align-items:center; gap:8px; }
+        .angle-slider { flex:1; height:6px; -webkit-appearance:none; appearance:none; background:var(--soft); border-radius:3px; outline:none; cursor:pointer; }
+        .angle-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:var(--text); cursor:pointer; }
+        .angle-val { width:48px; padding:2px 4px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--text); font-size:11px; font-weight:700; text-align:center; outline:none; }
+        .angle-unit { font-size:11px; font-weight:700; color:var(--faint); }
+        .angle-prompt { margin:4px 12px; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); font-size:11px; resize:vertical; min-height:50px; outline:none; font-family:inherit; }
+        .angle-input-img { margin:0 12px; display:flex; align-items:center; gap:8px; padding:6px; border:1px dashed var(--line); border-radius:8px; }
+        .angle-no-img { justify-content:center; padding:12px; color:var(--faint); font-size:11px; }
+        .angle-thumb { width:40px; height:40px; object-fit:cover; border-radius:6px; }
+        .angle-input-label { font-size:10px; font-weight:600; color:var(--muted); }
+        .angle-result { margin:0 12px; }
+        .angle-result-img { width:100%; border-radius:8px; max-height:150px; object-fit:contain; background:var(--soft); }
+        .angle-run { width:100%; padding:8px 0; background:var(--text); color:var(--strong-text); border:none; border-radius:10px; font-size:11px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+        .angle-run.running { opacity:0.5; cursor:not-allowed; }
         .llm-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
         .llm-model { flex:1; min-width:0; width:1px; }
         .llm-mode { background:#f8fafc; border:1px solid #edf2f7; border-radius:999px; padding:3px; display:flex; gap:2px; }
@@ -755,6 +784,7 @@
                 <button class="tool-btn" onclick="addPromptNode()"><i data-lucide="text-cursor-input" class="w-4 h-4"></i><span data-i18n="canvas.prompt">提示词</span></button>
                 <button class="tool-btn" onclick="addLoopNode()"><i data-lucide="repeat-2" class="w-4 h-4"></i><span data-i18n="canvas.loop">循环</span></button>
                 <button class="tool-btn" onclick="addLLMNode()"><i data-lucide="message-square-text" class="w-4 h-4"></i>LLM</button>
+                <button class="tool-btn" onclick="addAngleNode()"><i data-lucide="camera" class="w-4 h-4"></i>角度控制</button>
                 <button class="tool-btn" onclick="addGeneratorNode()"><i data-lucide="wand-sparkles" class="w-4 h-4"></i><span data-i18n="canvas.apiGenerate">API生成</span></button>
                 <button class="tool-btn" onclick="addMsGenNode()"><i data-lucide="cloud-lightning" class="w-4 h-4"></i><span data-i18n="canvas.msGenerate">MS生成</span></button>
                 <button class="tool-btn" onclick="addVideoNode()"><i data-lucide="clapperboard" class="w-4 h-4"></i><span data-i18n="canvas.videoGenerate">视频生成</span></button>
@@ -807,6 +837,7 @@
                 <button class="menu-btn" onclick="menuAdd('prompt')"><i data-lucide="text-cursor-input" class="w-4 h-4"></i><span data-i18n="canvas.prompt">提示词</span></button>
                 <button class="menu-btn" onclick="menuAdd('loop')"><i data-lucide="repeat-2" class="w-4 h-4"></i><span data-i18n="canvas.loopNode">循环节点</span></button>
                 <button class="menu-btn" onclick="menuAdd('llm')"><i data-lucide="message-square-text" class="w-4 h-4"></i><span data-i18n="canvas.llmNode">LLM 节点</span></button>
+                <button class="menu-btn" onclick="menuAdd('angle')"><i data-lucide="camera" class="w-4 h-4"></i>角度控制</button>
                 <button class="menu-btn" onclick="menuAdd('generator')"><i data-lucide="wand-sparkles" class="w-4 h-4"></i><span data-i18n="canvas.apiGenerate">API生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('msgen')"><i data-lucide="cloud-lightning" class="w-4 h-4"></i><span data-i18n="canvas.modelscopeGenerate">Modelscope生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('video')"><i data-lucide="clapperboard" class="w-4 h-4"></i><span data-i18n="canvas.videoGenerateNode">视频生成</span></button>
@@ -1132,7 +1163,26 @@
         let imageEditBaseH = 0;
         let textSelectionGuard = null;
         const PROMPT_TEXT_MAX_LENGTH = 20000;
-        const CLIENT_ID = 'canvas_' + Math.random().toString(36).slice(2);
+        function getOrCreateLocalId(key, prefix) {
+            let value = localStorage.getItem(key);
+            if(!value) {
+                value = `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+                localStorage.setItem(key, value);
+            }
+            return value;
+        }
+        const VISITOR_ID = getOrCreateLocalId('canvas_visitor_id', 'visitor');
+        const CLIENT_ID = getOrCreateLocalId('canvas_client_id', 'canvas');
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+            const requestUrl = typeof input === 'string' ? input : input?.url || '';
+            if(requestUrl.startsWith('/')) {
+                init = init || {};
+                init.headers = new Headers(init.headers || {});
+                init.headers.set('X-Visitor-ID', VISITOR_ID);
+            }
+            return nativeFetch(input, init);
+        };
         const CANVAS_EMOJIS = ['layers','sparkles','image','palette','wand-2','star','heart','rocket','flame','moon','cloud','leaf','gem','compass','pin','flag','bookmark','crown'];
         function renderCanvasIcon(icon, size = 14) {
             // 旧的默认 emoji 或空值都映射为 layers
@@ -1681,6 +1731,24 @@
                 if(!res.ok) throw new Error(tr('canvas.canvasListFailed'));
                 const data = await res.json();
                 canvases = data.canvases || [];
+                if(openFirst && !canvases.length) {
+                    const visitorRes = await fetch('/api/visitor/canvas', {
+                        method:'POST',
+                        headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({title: `${tr('canvas.newCanvas')} ${new Date().toLocaleTimeString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN', {hour:'2-digit', minute:'2-digit'})}`})
+                    });
+                    if(visitorRes.ok) {
+                        const visitorData = await visitorRes.json();
+                        if(visitorData.canvas) canvases = [{
+                            id:visitorData.canvas.id,
+                            title:visitorData.canvas.title,
+                            icon:visitorData.canvas.icon,
+                            created_at:visitorData.canvas.created_at,
+                            updated_at:visitorData.canvas.updated_at,
+                            node_count:(visitorData.canvas.nodes || []).length
+                        }];
+                    }
+                }
                 refreshGateViewControls();
                 renderCanvasList();
                 refreshTrashCount();
@@ -2334,6 +2402,10 @@
                 running:false
             });
         }
+        function addAngleNode(point){
+            const p = point || defaultPoint(60, 0);
+            return addNode({id:uid('ang'), type:'angle', x:p.x, y:p.y, rotation:0, pitch:0, distance:4.0, prompt:'', angleImageUrl:'', running:false});
+        }
         function addGeneratorNode(point){
             const p = point || defaultPoint(120, 0);
             const providerId = imageApiProviders()[0]?.id || '';
@@ -2897,12 +2969,13 @@
                         {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
                         {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                         {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'},
-                        {type:'llm', label:'LLM', icon:'message-square-text'}
+                        {type:'llm', label:'LLM', icon:'message-square-text'},
+                        {type:'angle', label:'角度控制', icon:'camera'}
                     ];
                 }
                 return [];
             }
-            if(CANVAS_GENERATOR_TYPES.includes(node.type) || node.type === 'llm'){
+            if(CANVAS_GENERATOR_TYPES.includes(node.type) || node.type === 'llm' || node.type === 'angle'){
                 return [
                     {type:'image', label:tr('canvas.imageCard'), icon:'image-plus'},
                     {type:'prompt', label:tr('canvas.prompt'), icon:'text-cursor-input'},
@@ -2934,14 +3007,14 @@
         }
         function openGeneratorNodeMenu(nodeId, clientX, clientY){
             const node = nodes.find(n => n.id === nodeId);
-            if(!node || !CANVAS_GENERATOR_TYPES.includes(node.type)) return false;
+            if(!node || (!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'angle')) return false;
             const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(nodeId)}"]`);
             const rect = el?.getBoundingClientRect();
             const point = screenToWorld(clientX, clientY);
             const inputOptions = linkCreateOptions({originId:nodeId, originKind:'in', point});
             const outputOptions = [
                 {type:'output', label:'Output', icon:'circle-dot'},
-                ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
+                ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) || node.type === 'angle' ? [
                     {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
                     {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
                     {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
@@ -3180,6 +3253,7 @@
             if(type === 'loop') return addLoopNode(point);
             if(type === 'group') return addGroupNode(point);
             if(type === 'llm') return addLLMNode(point);
+            if(type === 'angle') return addAngleNode(point);
             if(type === 'generator') return addGeneratorNode(point);
             if(type === 'msgen') return addMsGenNode(point);
             if(type === 'video') return addVideoNode(point);
@@ -3193,6 +3267,7 @@
             if(type === 'prompt') addPromptNode(menuPoint);
             if(type === 'loop') addLoopNode(menuPoint);
             if(type === 'llm') addLLMNode(menuPoint);
+            if(type === 'angle') addAngleNode(menuPoint);
             if(type === 'generator') addGeneratorNode(menuPoint);
             if(type === 'msgen') addMsGenNode(menuPoint);
             if(type === 'video') addVideoNode(menuPoint);
@@ -4127,15 +4202,15 @@
                 refreshSelectionVisuals();
             };
             el.oncontextmenu = e => {
-                if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output') return;
+                if(!CANVAS_GENERATOR_TYPES.includes(node.type) && node.type !== 'output' && node.type !== 'angle') return;
                 e.preventDefault();
                 e.stopPropagation();
                 if(node.type === 'output') openOutputNodeMenu(node.id, e.clientX, e.clientY);
                 else openGeneratorNodeMenu(node.id, e.clientX, e.clientY);
             };
-            const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
+            const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'angle' ? '角度控制' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
             // 失败徽章只在一键运行模式中显示，单节点失败已通过 alert 提示
-            const showStatus = ['generator','msgen','comfy','llm'].includes(node.type) && node.runStatus
+            const showStatus = ['generator','msgen','comfy','llm','angle'].includes(node.type) && node.runStatus
                 && (node.runStatus !== 'failed' || node._cascadeFailed);
             const statusHtml = showStatus ? (() => {
                 const label = { queued:'排队中', running:'运行中', done:'完成', failed:'失败' }[node.runStatus] || '';
@@ -4260,6 +4335,7 @@
                 body.innerHTML = `<div class="text-[11px] text-gray-400">${promptNodes.length} ${tr('canvas.promptCount')} ${tr('canvas.grouped')}</div>`;
             }
             if(node.type === 'llm') body.appendChild(renderLLMBody(node));
+            if(node.type === 'angle') body.appendChild(renderAngleBody(node));
             if(node.type === 'generator') body.appendChild(renderGeneratorBody(node));
             if(node.type === 'msgen') body.appendChild(renderMsGenBody(node));
             if(node.type === 'video') body.appendChild(renderVideoBody(node));
@@ -4283,8 +4359,8 @@
                 if(e.button !== 0 || !isNodeDragSurface(e.target)) return;
                 startNodeDrag(e, node);
             };
-            const canInput = ['generator','comfy','output','llm','msgen','video'].includes(node.type) || (node.type === 'loop' && node.imageInput);
-            const canOutput = ['image','prompt','loop','group','promptGroup','generator','comfy','llm','msgen','video'].includes(node.type);
+            const canInput = ['generator','comfy','output','llm','msgen','video','angle'].includes(node.type) || (node.type === 'loop' && node.imageInput);
+            const canOutput = ['image','prompt','loop','group','promptGroup','generator','comfy','llm','msgen','video','angle'].includes(node.type);
             if(canInput) el.insertAdjacentHTML('beforeend', `<div class="port in" title="${tr('canvas.connectHere')}"></div>`);
             if(canOutput) el.insertAdjacentHTML('beforeend', `<div class="port out" title="${tr('canvas.dragConnect')}"></div>`);
             el.insertAdjacentHTML('beforeend', `<div class="resize-handle" title="${tr('canvas.resize')}"></div>`);
@@ -4387,6 +4463,7 @@
             if(type === 'prompt') return {w:310, h:0};
             if(type === 'loop') return {w:336, h:0};
             if(type === 'llm') return {w:420, h:590};
+            if(type === 'angle') return {w:380, h:580};
             if(type === 'generator') return {w:380, h:0};
             if(type === 'msgen') return {w:380, h:0};
             if(type === 'video') return {w:400, h:0};
@@ -4887,6 +4964,195 @@
                     }
                 };
             });
+        }
+        function renderAngleBody(node){
+            const wrap = document.createElement('div');
+            wrap.className = 'angle-body';
+            const sources = connections.filter(c => c.to === node.id).map(c => nodes.find(n => n.id === c.from)).filter(Boolean);
+            const imgSource = sources.find(n => n.type === 'image' && n.url);
+            const promptSource = sources.find(n => n.type === 'prompt' && n.text);
+            const promptVal = node._autoPrompt || node.prompt || promptSource?.text || '';
+            const hasResult = node.angleImageUrl ? true : false;
+            const safeId = escapeAttr(node.id);
+            wrap.innerHTML = `
+                <div class="angle-three-wrap" id="angle-three-${safeId}"><div class="angle-three-placeholder">3D</div></div>
+                <div class="angle-section">
+                    <div class="angle-label">旋转</div>
+                    <div class="angle-slider-row">
+                        <input type="range" class="angle-slider" data-key="rotation" min="-90" max="90" value="${node.rotation || 0}" step="1">
+                        <input type="number" class="angle-val" data-key="rotation" value="${node.rotation || 0}" min="-90" max="90">
+                        <span class="angle-unit">°</span>
+                    </div>
+                </div>
+                <div class="angle-section">
+                    <div class="angle-label">俯仰</div>
+                    <div class="angle-slider-row">
+                        <input type="range" class="angle-slider" data-key="pitch" min="-90" max="90" value="${node.pitch || 0}" step="1">
+                        <input type="number" class="angle-val" data-key="pitch" value="${node.pitch || 0}" min="-90" max="90">
+                        <span class="angle-unit">°</span>
+                    </div>
+                </div>
+                <div class="angle-section">
+                    <div class="angle-label">距离</div>
+                    <div class="angle-slider-row">
+                        <input type="range" class="angle-slider" data-key="distance" min="0.1" max="8" value="${node.distance || 4.0}" step="0.1">
+                        <input type="number" class="angle-val" data-key="distance" value="${node.distance || 4.0}" min="0.1" max="8" step="0.1">
+                    </div>
+                </div>
+                ${imgSource ? `<div class="angle-input-img"><img src="${escapeAttr(imgSource.url)}" class="angle-thumb"><span class="angle-input-label">输入图片</span></div>` : '<div class="angle-input-img angle-no-img"><span>连接图片节点以输入</span></div>'}
+                <textarea class="angle-prompt" placeholder="提示词（可选）">${escapeHtml(promptVal)}</textarea>
+                ${hasResult ? `<div class="angle-result"><img src="${escapeAttr(node.angleImageUrl)}" class="angle-result-img"></div>` : ''}
+                <div class="gen-run-row">
+                    <button class="angle-run ${node.running ? 'running' : ''}" ${node.running ? 'disabled' : ''}><i data-lucide="zap" class="w-4 h-4"></i>${node.running ? '处理中...' : '角度变换'}</button>
+                    ${cascadeBtnHtml(node)}
+                </div>
+                ${retryBarHtml(node)}
+            `;
+            const updateAnglePrompt = (h, v, d) => {
+                let parts = [];
+                if (h !== 0) {
+                    const dir = h > 0 ? "向右" : "向左";
+                    parts.push(dir + '旋转' + Math.abs(h) + '度');
+                }
+                if (v !== 0) {
+                    const dir = v > 0 ? "俯视" : "仰视";
+                    parts.push(dir + Math.abs(v) + '度');
+                }
+                let lensText = "";
+                if (d > 4) lensText = "使用广角镜头";
+                else if (d < 4) lensText = "使用特写镜头";
+                let resultText = "";
+                if (parts.length > 0) resultText = '将相机' + parts.join('，');
+                if (lensText) resultText += (resultText ? '，' : '将相机') + lensText;
+                node._autoPrompt = resultText;
+                const promptEl = wrap.querySelector('.angle-prompt');
+                if (promptEl && !promptEl._userEdited) {
+                    promptEl.value = resultText;
+                }
+                scheduleSave();
+            };
+            const updateCamera = (h, v, d) => {
+                updateAnglePrompt(h, v, d);
+                const threeEl = document.getElementById('angle-three-' + safeId);
+                if (threeEl && threeEl._updateCam) threeEl._updateCam(h, v, d);
+            };
+            wrap.querySelectorAll('.angle-slider').forEach(slider => {
+                slider.oninput = function(e){
+                    const key = this.dataset.key;
+                    const val = parseFloat(this.value);
+                    node[key] = val;
+                    const numInput = wrap.querySelector('.angle-val[data-key="' + key + '"]');
+                    if(numInput) numInput.value = val;
+                    updateCamera(node.rotation || 0, node.pitch || 0, node.distance || 4.0);
+                    scheduleSave();
+                };
+            });
+            wrap.querySelectorAll('.angle-val').forEach(input => {
+                input.oninput = function(e){
+                    const key = this.dataset.key;
+                    const val = parseFloat(this.value) || 0;
+                    node[key] = val;
+                    const slider = wrap.querySelector('.angle-slider[data-key="' + key + '"]');
+                    if(slider) slider.value = val;
+                    updateCamera(node.rotation || 0, node.pitch || 0, node.distance || 4.0);
+                    scheduleSave();
+                };
+            });
+            const promptEl = wrap.querySelector('.angle-prompt');
+            promptEl.oninput = e => {
+                node.prompt = e.target.value;
+                promptEl._userEdited = true;
+                scheduleSave();
+            };
+            bindScrollableText(promptEl);
+            wrap.querySelector('.angle-run').onclick = e => { e.stopPropagation(); runAngleNode(node.id); };
+            bindCascadeButtons(wrap, node.id);
+            // Initialize Three.js 3D viewport after a short delay so the DOM is ready
+            setTimeout(() => {
+                initAngleThree(node.id, node.rotation || 0, node.pitch || 0, node.distance || 4.0);
+            }, 50);
+            return wrap;
+        }
+        async function initAngleThree(nodeId, rot, pitch, dist) {
+            const container = document.getElementById('angle-three-' + CSS.escape(nodeId));
+            if (!container || container._initialized) return;
+            container._initialized = true;
+            let THREE;
+            try { THREE = await import('three'); } catch(e) { return; }
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1e293b);
+            const cam = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.innerHTML = '';
+            container.appendChild(renderer.domElement);
+            const geometry = new THREE.PlaneGeometry(3, 3);
+            const material = new THREE.MeshStandardMaterial({ color: 0x444444, side: THREE.DoubleSide, metalness:0.3, roughness:0.7 });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+            const gridHelper = new THREE.GridHelper(20, 20, 0x555555, 0x3a3a3a);
+            scene.add(gridHelper);
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambient);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            dirLight.position.set(5, 10, 7);
+            scene.add(dirLight);
+            const updateCam = (h, v, d) => {
+                const phi = THREE.MathUtils.degToRad(90 - v);
+                const theta = THREE.MathUtils.degToRad(h);
+                cam.position.x = d * Math.sin(phi) * Math.sin(theta);
+                cam.position.y = d * Math.cos(phi);
+                cam.position.z = d * Math.sin(phi) * Math.cos(theta);
+                cam.lookAt(0, 0, 0);
+            };
+            updateCam(rot, pitch, dist);
+            container._updateCam = updateCam;
+            function animate() {
+                requestAnimationFrame(animate);
+                renderer.render(scene, cam);
+            }
+            animate();
+            const ro = new ResizeObserver(() => {
+                const w = container.clientWidth, h = container.clientHeight;
+                if (w > 0 && h > 0) { renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+            });
+            ro.observe(container);
+        }
+        async function runAngleNode(nodeId, opts={}){
+            const node = nodes.find(n => n.id === nodeId);
+            if(!node || (node.running && !opts.cascade)) return;
+            const sources = connections.filter(c => c.to === nodeId).map(c => nodes.find(n => n.id === c.from)).filter(Boolean);
+            const imgSource = sources.find(n => n.type === 'image' && n.url);
+            const imageUrl = imgSource?.url || '';
+            const prompt = node._autoPrompt || node.prompt || sources.find(n => n.type === 'prompt' && n.text)?.text || '';
+            if(!imageUrl){
+                if(opts.cascade) throw new Error('角度控制节点缺少图片输入');
+                alert('请先连接图片节点'); return;
+            }
+            if(!opts.cascade){ node.running = true; refreshNodes([nodeId]); }
+            try {
+                const res = await fetch('/api/angle/generate', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({
+                        prompt: prompt,
+                        image_urls: [imageUrl],
+                        resolution: '1024x1024'
+                    })
+                }).then(r => r.json());
+                node.angleImageUrl = res.url || '';
+                if(!opts.cascade) node.running = false;
+                node.runStatus = 'done'; node.runError = '';
+                refreshNodes([nodeId]);
+                scheduleSave();
+            } catch(err) {
+                if(!opts.cascade) node.running = false;
+                node.runStatus = 'failed'; node.runError = err.message || String(err);
+                refreshNodes([nodeId]);
+                if(opts.cascade) throw err;
+                alert(err.message || '角度变换失败');
+            }
         }
         function bindScrollableText(el){
             if(!el) return;
@@ -5759,6 +6025,18 @@
                     }
                 }
                 if(n.type === 'image' && n.url) return {id:n.id, type:'image', label:n.name || 'image', preview:n.url, refs:[{url:n.url, name:n.name || 'image', role:n.role || ''}], prompt:''};
+                if(n.type === 'angle') {
+                    const anglePrompt = n._autoPrompt || n.prompt || '';
+                    if(n.angleImageUrl) {
+                        return {id:n.id, type:'angle', label:'角度控制', preview:n.angleImageUrl, refs:[{url:n.angleImageUrl, name:'angle-output.png'}], prompt:anglePrompt};
+                    }
+                    // 未处理时返回原始图片 + 角度描述
+                    const imgSrc = connections.filter(c => c.to === n.id).map(c => nodes.find(x => x.id === c.from)).filter(Boolean).find(x => x.type === 'image' && x.url);
+                    if(imgSrc) {
+                        return {id:n.id, type:'angle', label:'角度控制', preview:imgSrc.url, refs:[{url:imgSrc.url, name:imgSrc.name || 'image'}], prompt:anglePrompt};
+                    }
+                    return {id:n.id, type:'angle', label:'角度控制', refs:[], prompt:anglePrompt};
+                }
                 if(n.type === 'group') {
                     const items = (n.items || []).map(id => nodes.find(x => x.id === id)).filter(Boolean);
                     const sources = items.filter(x => x.type === 'image' && x.url).map(img => ({
@@ -6249,7 +6527,7 @@
         }
         // 判断是不是「链尾」节点：没有下游生成节点（直接相连或经 Output 中转都算）
         function isTerminalGenerator(nodeId){
-            const GEN_TYPES = ['generator','msgen','comfy','llm','video'];
+            const GEN_TYPES = ['generator','msgen','comfy','llm','video','angle'];
             for(const c of connections.filter(c => c.from === nodeId)){
                 const t = nodes.find(n => n.id === c.to);
                 if(!t) continue;
@@ -6331,6 +6609,7 @@
             if(node.type === 'msgen') return runMsGenNode(node.id, runOpts);
             if(node.type === 'comfy') return runComfyNode(node.id, runOpts);
             if(node.type === 'llm') return runLLMNode(node.id, runOpts);
+            if(node.type === 'angle') return runAngleNode(node.id, runOpts);
             if(node.type === 'video') return runVideoNode(node.id, runOpts);
             return Promise.resolve();
         }
@@ -6357,7 +6636,7 @@
             return Promise.allSettled(workers);
         }
         function canvasRunTypes(){
-            return ['generator','msgen','comfy','llm','video'];
+            return ['generator','msgen','comfy','llm','video','angle'];
         }
         function canvasWorkflowEdges(){
             const runTypes = canvasRunTypes();
@@ -6617,6 +6896,7 @@
                     else if(node.type === 'msgen') await runMsGenNode(id, {cascade:true});
                     else if(node.type === 'comfy') await runComfyNode(id, {cascade:true});
                     else if(node.type === 'llm') await runLLMNode(id, {cascade:true});
+                    else if(node.type === 'angle') await runAngleNode(id, {cascade:true});
                     else if(node.type === 'video') await runVideoNode(id, {cascade:true});
                     node.runStatus = 'done';
                     refreshNodes([id]);
@@ -7718,7 +7998,9 @@
             }
             if(to.type === 'loop') return Boolean(to.imageInput) && ['image','group','output'].includes(from.type);
             if(to.type === 'llm') return ['prompt','loop','promptGroup','llm','image','group','output'].includes(from.type);
+            if(to.type === 'angle') return ['image','prompt','loop','output'].includes(from.type);
             if(from.type === 'llm') return CANVAS_GENERATOR_TYPES.includes(to.type);
+            if(from.type === 'angle') return CANVAS_GENERATOR_TYPES.includes(to.type) || to.type === 'output';
             return CANVAS_GENERATOR_TYPES.includes(to.type) && ['image','prompt','loop','group','promptGroup','output','llm'].includes(from.type);
         }
         function sanitizeConnections(){

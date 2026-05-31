@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/static/logo.png" type="image/png">
+    <title>共享画布</title>
+    <style>
+        :root {
+            --bg:#f7f8fb;
+            --grid:#dfe5ee;
+            --panel:rgba(255,255,255,.9);
+            --card:#fff;
+            --text:#15171d;
+            --muted:#697386;
+            --faint:#9aa5b5;
+            --line:#e5e9f0;
+            --strong:#15171d;
+            --strong-text:#fff;
+            --accent:#0f8f73;
+            --warn:#b7791f;
+            --danger:#c24141;
+            --shadow:rgba(18,24,38,.12);
+        }
+        * { box-sizing:border-box; }
+        html, body { margin:0; width:100%; height:100%; overflow:hidden; font-family:Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--text); background:var(--bg); }
+        button, input { font:inherit; }
+        button { border:0; cursor:pointer; }
+        .app { position:relative; width:100%; height:100%; overflow:hidden; }
+        .board {
+            position:absolute; inset:0; overflow:hidden;
+            background:
+                linear-gradient(var(--grid) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+                var(--bg);
+            background-size:52px 52px;
+        }
+        .world { position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform; }
+        .links { position:absolute; left:0; top:0; width:1px; height:1px; overflow:visible; pointer-events:none; }
+        .link-path { fill:none; stroke:#b6c0ce; stroke-width:2.5; stroke-linecap:round; opacity:.82; }
+        .node {
+            position:absolute; width:280px; min-height:108px; border:1px solid var(--line); border-radius:8px;
+            background:var(--card); box-shadow:0 12px 34px var(--shadow); overflow:hidden;
+        }
+        .node-head { height:42px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 14px; border-bottom:1px solid var(--line); background:#fbfcfe; }
+        .node-title { font-size:12px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .node-type { font-size:10px; font-weight:800; color:var(--faint); letter-spacing:.08em; text-transform:uppercase; }
+        .node-body { padding:12px; color:var(--muted); font-size:12px; line-height:1.45; }
+        .image-node { width:260px; }
+        .prompt-node { width:320px; }
+        .generator-node, .msgen-node, .comfy-node, .video-node, .angle-node, .llm-node { width:380px; }
+        .output-node { width:460px; }
+        .group-node, .promptGroup-node, .loop-node { width:320px; }
+        .image-wrap { width:100%; aspect-ratio:1/1; border-radius:6px; overflow:hidden; background:#eef2f7; display:flex; align-items:center; justify-content:center; color:var(--faint); }
+        .image-wrap img, .image-wrap video { width:100%; height:100%; object-fit:cover; display:block; }
+        .caption { margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--faint); font-size:11px; }
+        .prompt-text { white-space:pre-wrap; color:#2c3440; max-height:250px; overflow:hidden; }
+        .summary-row { display:flex; align-items:center; gap:8px; margin:4px 0; min-width:0; }
+        .summary-label { width:74px; color:var(--faint); flex:0 0 auto; }
+        .summary-value { color:#2c3440; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .thumb-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:8px; }
+        .thumb { position:relative; aspect-ratio:1/1; border-radius:6px; overflow:hidden; background:#eef2f7; border:1px solid var(--line); }
+        .thumb img, .thumb video { width:100%; height:100%; object-fit:cover; display:block; }
+        .thumb video { background:#111827; }
+        .empty { height:76px; border:1px dashed #cbd5e1; border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--faint); }
+        .topbar { position:absolute; z-index:20; left:18px; top:18px; right:18px; display:flex; justify-content:space-between; align-items:flex-start; pointer-events:none; gap:12px; }
+        .bar-group { pointer-events:auto; display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px; box-shadow:0 12px 34px var(--shadow); backdrop-filter:blur(14px); }
+        .title-block { min-width:0; max-width:min(520px, calc(100vw - 180px)); padding:2px 8px; }
+        .title { font-size:13px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .meta { margin-top:2px; font-size:11px; color:var(--faint); display:flex; gap:8px; align-items:center; white-space:nowrap; }
+        .dot { width:6px; height:6px; border-radius:50%; background:var(--accent); display:inline-block; }
+        .dot.offline { background:var(--warn); }
+        .icon-btn { width:34px; height:34px; border-radius:7px; background:#fff; color:#334155; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-weight:850; }
+        .icon-btn:hover { background:#f7fafc; }
+        .login-backdrop { position:absolute; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(247,248,251,.84); backdrop-filter:blur(18px); }
+        .login-panel { width:min(420px, 100%); background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:0 24px 80px rgba(18,24,38,.18); padding:22px; }
+        .login-logo { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+        .login-logo img { width:32px; height:32px; border-radius:7px; }
+        .login-title { font-size:18px; font-weight:850; }
+        .login-subtitle { margin-top:3px; color:var(--faint); font-size:12px; }
+        .field { display:flex; flex-direction:column; gap:7px; margin-top:14px; }
+        .field span { font-size:12px; font-weight:750; color:#475569; }
+        .field input { height:42px; border:1px solid var(--line); border-radius:7px; padding:0 12px; outline:none; color:var(--text); background:#fbfcfe; }
+        .field input:focus { border-color:#9fb3c8; background:#fff; }
+        .primary { margin-top:18px; width:100%; height:42px; border-radius:7px; background:var(--strong); color:var(--strong-text); font-weight:850; }
+        .primary:disabled { opacity:.56; cursor:default; }
+        .login-error { min-height:18px; margin-top:12px; color:var(--danger); font-size:12px; }
+        .toast { position:absolute; left:50%; bottom:22px; transform:translateX(-50%); z-index:50; background:#15171d; color:#fff; border-radius:8px; padding:9px 12px; font-size:12px; opacity:0; pointer-events:none; transition:opacity .18s ease; }
+        .toast.show { opacity:1; }
+        .lightbox { position:absolute; inset:0; z-index:35; display:none; align-items:center; justify-content:center; padding:26px; background:rgba(9,12,20,.82); }
+        .lightbox.open { display:flex; }
+        .lightbox img, .lightbox video { max-width:96vw; max-height:92vh; object-fit:contain; border-radius:8px; box-shadow:0 24px 90px rgba(0,0,0,.4); background:#0f172a; }
+        .lightbox-close { position:absolute; right:20px; top:20px; width:38px; height:38px; border-radius:7px; background:rgba(255,255,255,.12); color:#fff; font-size:20px; }
+        @media (max-width:720px) {
+            .topbar { left:10px; right:10px; top:10px; }
+            .bar-group { padding:6px; }
+            .title-block { max-width:calc(100vw - 118px); }
+            .title { font-size:12px; }
+            .meta { font-size:10px; }
+            .node { box-shadow:0 8px 24px rgba(18,24,38,.12); }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div id="board" class="board">
+            <div id="world" class="world">
+                <svg id="links" class="links"></svg>
+                <div id="nodes"></div>
+            </div>
+        </div>
+        <div class="topbar">
+            <div class="bar-group">
+                <button id="fitBtn" class="icon-btn" type="button" title="适合窗口">⌖</button>
+                <div class="title-block">
+                    <div id="canvasTitle" class="title">共享画布</div>
+                    <div class="meta"><span id="syncDot" class="dot offline"></span><span id="syncText">等待登录</span><span id="canvasTime">--</span></div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <button id="zoomOutBtn" class="icon-btn" type="button" title="缩小">−</button>
+                <button id="zoomInBtn" class="icon-btn" type="button" title="放大">+</button>
+                <button id="logoutBtn" class="icon-btn" type="button" title="退出登录">×</button>
+            </div>
+        </div>
+        <div id="loginBackdrop" class="login-backdrop">
+            <form id="loginPanel" class="login-panel">
+                <div class="login-logo">
+                    <img src="/static/logo.png" alt="">
+                    <div>
+                        <div class="login-title">共享画布登录</div>
+                        <div class="login-subtitle">输入访问密码后打开画布</div>
+                    </div>
+                </div>
+                <label id="canvasIdField" class="field">
+                    <span>画布 ID</span>
+                    <input id="canvasIdInput" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="field">
+                    <span>访问密码</span>
+                    <input id="passwordInput" type="password" autocomplete="current-password">
+                </label>
+                <button id="loginBtn" class="primary" type="submit">进入画布</button>
+                <div id="loginError" class="login-error"></div>
+            </form>
+        </div>
+        <div id="lightbox" class="lightbox">
+            <button id="lightboxClose" class="lightbox-close" type="button">×</button>
+            <img id="lightboxImage" alt="">
+            <video id="lightboxVideo" controls playsinline></video>
+        </div>
+        <div id="toast" class="toast"></div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(location.search);
+        let canvasId = params.get('canvas') || params.get('id') || location.hash.replace(/^#/, '');
+        let token = canvasId ? sessionStorage.getItem(`share_token_${canvasId}`) || '' : '';
+        let canvas = null;
+        let nodes = [];
+        let connections = [];
+        let viewport = { x: 0, y: 0, scale: 1 };
+        let loadedOnce = false;
+        let ws = null;
+        let pollTimer = null;
+        let remoteBusy = false;
+        let lastUpdatedAt = 0;
+        let pan = null;
+        const board = document.getElementById('board');
+        const world = document.getElementById('world');
+        const nodesEl = document.getElementById('nodes');
+        const linksEl = document.getElementById('links');
+        const loginBackdrop = document.getElementById('loginBackdrop');
+        const canvasIdInput = document.getElementById('canvasIdInput');
+        const canvasIdField = document.getElementById('canvasIdField');
+        const passwordInput = document.getElementById('passwordInput');
+        const loginError = document.getElementById('loginError');
+        const loginBtn = document.getElementById('loginBtn');
+        const canvasTitle = document.getElementById('canvasTitle');
+        const canvasTime = document.getElementById('canvasTime');
+        const syncDot = document.getElementById('syncDot');
+        const syncText = document.getElementById('syncText');
+        const toast = document.getElementById('toast');
+
+        function escapeHtml(value){
+            return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function escapeAttr(value){ return escapeHtml(value); }
+        function outputUrlValue(item){ return typeof item === 'string' ? item : item?.url || ''; }
+        function isVideoUrl(url){ return /\.(mp4|webm|mov|m4v)(\?|$)/i.test(String(url || '')); }
+        function formatTime(value){
+            if(!value) return '--';
+            const raw = Number(value);
+            const time = raw < 10000000000 ? raw * 1000 : raw;
+            const date = new Date(time);
+            if(Number.isNaN(date.getTime())) return '--';
+            return date.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+        }
+        function status(text, online=true){
+            syncText.textContent = text;
+            syncDot.classList.toggle('offline', !online);
+        }
+        function showToast(text){
+            toast.textContent = text;
+            toast.classList.add('show');
+            clearTimeout(showToast.timer);
+            showToast.timer = setTimeout(() => toast.classList.remove('show'), 1400);
+        }
+        function apiHeaders(){
+            return token ? { Authorization: `Bearer ${token}` } : {};
+        }
+        async function jsonFetch(url, options={}){
+            const res = await fetch(url, {
+                ...options,
+                headers: { ...(options.headers || {}), ...apiHeaders() },
+            });
+            const data = await res.json().catch(() => ({}));
+            if(!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+            return data;
+        }
+        function showLogin(message=''){
+            loginBackdrop.style.display = 'flex';
+            loginError.textContent = message;
+            canvasIdInput.value = canvasId || '';
+            canvasIdField.style.display = canvasId ? 'none' : 'flex';
+            setTimeout(() => (canvasId ? passwordInput : canvasIdInput).focus(), 30);
+            status('等待登录', false);
+        }
+        function hideLogin(){
+            loginBackdrop.style.display = 'none';
+            loginError.textContent = '';
+            passwordInput.value = '';
+        }
+        function storageKey(){ return `share_token_${canvasId}`; }
+
+        async function login(event){
+            event?.preventDefault();
+            const nextCanvasId = (canvasId || canvasIdInput.value || '').trim();
+            const password = passwordInput.value;
+            if(!nextCanvasId){
+                loginError.textContent = '请输入画布 ID';
+                return;
+            }
+            if(!password){
+                loginError.textContent = '请输入访问密码';
+                return;
+            }
+            loginBtn.disabled = true;
+            loginError.textContent = '';
+            try {
+                const res = await fetch('/api/share/login', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({ canvas_id: nextCanvasId, password }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if(!res.ok) throw new Error(data.detail || '登录失败');
+                canvasId = data.canvas?.id || nextCanvasId;
+                token = data.token || '';
+                sessionStorage.setItem(storageKey(), token);
+                const url = new URL(location.href);
+                url.searchParams.set('canvas', canvasId);
+                history.replaceState(null, '', url);
+                hideLogin();
+                await loadCanvas({ preserveView:false });
+                connectSocket();
+                startPolling();
+            } catch(err) {
+                loginError.textContent = err.message || '登录失败';
+            } finally {
+                loginBtn.disabled = false;
+            }
+        }
+
+        async function loadCanvas({ preserveView=false }={}){
+            if(!canvasId || !token) {
+                showLogin();
+                return;
+            }
+            const oldViewport = { ...viewport };
+            try {
+                status('同步中...', true);
+                const data = await jsonFetch(`/api/share/canvases/${encodeURIComponent(canvasId)}`);
+                canvas = data.canvas;
+                nodes = canvas.nodes || [];
+                connections = canvas.connections || [];
+                lastUpdatedAt = Number(canvas.updated_at || 0);
+                if(preserveView && loadedOnce) viewport = oldViewport;
+                else viewport = normalizeViewport(canvas.viewport);
+                loadedOnce = true;
+                render();
+                status('已同步', true);
+            } catch(err) {
+                if(/登录|密码|过期|无效|401/.test(String(err.message))){
+                    sessionStorage.removeItem(storageKey());
+                    token = '';
+                    showLogin(err.message);
+                    return;
+                }
+                status('同步失败', false);
+                showToast(err.message || '同步失败');
+            }
+        }
+
+        function normalizeViewport(v){
+            const next = {
+                x: Number(v?.x || 0),
+                y: Number(v?.y || 0),
+                scale: Number(v?.scale || 1),
+            };
+            if(!Number.isFinite(next.x) || !Number.isFinite(next.y) || !Number.isFinite(next.scale)) return { x:0, y:0, scale:1 };
+            next.scale = Math.max(.12, Math.min(2.5, next.scale));
+            return next;
+        }
+        function applyViewport(){
+            world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
+        }
+        function nodeSize(type){
+            if(type === 'image') return {w:260, h:360};
+            if(type === 'prompt') return {w:320, h:180};
+            if(type === 'output') return {w:460, h:320};
+            if(['generator','msgen','comfy','video','angle','llm'].includes(type)) return {w:380, h:250};
+            return {w:320, h:130};
+        }
+        function nodeTitle(node){
+            const names = {
+                image:'Image', prompt:'Prompt', output:'Output', generator:'API 生成', msgen:'ModelScope',
+                comfy:'ComfyUI', video:'视频生成', llm:'LLM', angle:'角度控制', loop:'循环',
+                group:'Group', promptGroup:'Prompts'
+            };
+            return names[node.type] || node.type || 'Node';
+        }
+        function render(){
+            applyViewport();
+            canvasTitle.textContent = canvas?.title || '共享画布';
+            canvasTime.textContent = formatTime(canvas?.updated_at || canvas?.created_at);
+            nodesEl.innerHTML = '';
+            nodes.forEach(node => nodesEl.appendChild(renderNode(node)));
+            requestAnimationFrame(renderLinks);
+        }
+        function renderNode(node){
+            const el = document.createElement('div');
+            const size = nodeSize(node.type);
+            el.className = `node ${escapeAttr(node.type || 'unknown')}-node`;
+            el.dataset.id = node.id;
+            el.style.left = `${Number(node.x || 0)}px`;
+            el.style.top = `${Number(node.y || 0)}px`;
+            el.style.width = `${Number(node.w || size.w)}px`;
+            if(node.h || node.type === 'image') el.style.height = `${Number(node.h || size.h)}px`;
+            el.innerHTML = `<div class="node-head"><span class="node-title">${escapeHtml(nodeTitle(node))}</span><span class="node-type">${escapeHtml(node.type || '')}</span></div>`;
+            const body = document.createElement('div');
+            body.className = 'node-body';
+            if(node.type === 'image') renderImageNode(body, node);
+            else if(node.type === 'prompt') renderPromptNode(body, node);
+            else if(node.type === 'output') renderOutputNode(body, node);
+            else if(['generator','msgen','comfy','video','angle','llm'].includes(node.type)) renderProcessNode(body, node);
+            else if(node.type === 'loop') renderLoopNode(body, node);
+            else renderGroupNode(body, node);
+            el.appendChild(body);
+            return el;
+        }
+        function renderImageNode(body, node){
+            const url = outputUrlValue(node.url);
+            body.innerHTML = url
+                ? `<div class="image-wrap">${mediaHtml(url)}</div><div class="caption">${escapeHtml(node.name || 'image')}</div>`
+                : `<div class="empty">空图片</div>`;
+            bindMediaOpen(body);
+        }
+        function renderPromptNode(body, node){
+            body.innerHTML = `<div class="prompt-text">${escapeHtml(node.text || '空提示词')}</div>`;
+        }
+        function renderOutputNode(body, node){
+            const images = (node.images || []).map(outputUrlValue).filter(Boolean);
+            body.innerHTML = images.length
+                ? `<div class="thumb-grid">${images.map(url => `<div class="thumb">${mediaHtml(url)}</div>`).join('')}</div>`
+                : `<div class="empty">暂无输出</div>`;
+            bindMediaOpen(body);
+        }
+        function renderProcessNode(body, node){
+            const rows = [];
+            if(node.model) rows.push(['模型', node.model]);
+            if(node.apiProvider) rows.push(['平台', node.apiProvider]);
+            if(node.ratio || node.resolution) rows.push(['尺寸', [node.ratio, node.resolution].filter(Boolean).join(' / ')]);
+            if(node.prompt) rows.push(['提示词', node.prompt]);
+            if(node.userInput) rows.push(['输入', node.userInput]);
+            if(node.output) rows.push(['输出', node.output]);
+            const outputs = (node.generatedOutputs || []).map(outputUrlValue).filter(Boolean);
+            const rowsHtml = rows.slice(0, 8).map(([label, value]) => `<div class="summary-row"><span class="summary-label">${escapeHtml(label)}</span><span class="summary-value" title="${escapeAttr(value)}">${escapeHtml(value)}</span></div>`).join('');
+            const outputHtml = outputs.length ? `<div class="thumb-grid" style="margin-top:10px">${outputs.map(url => `<div class="thumb">${mediaHtml(url)}</div>`).join('')}</div>` : '';
+            body.innerHTML = rowsHtml || `<div class="empty">节点</div>`;
+            body.insertAdjacentHTML('beforeend', outputHtml);
+            bindMediaOpen(body);
+        }
+        function renderLoopNode(body, node){
+            body.innerHTML = `
+                <div class="summary-row"><span class="summary-label">次数</span><span class="summary-value">${escapeHtml(node.count || 1)}</span></div>
+                <div class="summary-row"><span class="summary-label">模式</span><span class="summary-value">${escapeHtml(node.mode || 'serial')}</span></div>
+                ${node.variablePrompt ? `<div class="prompt-text">${escapeHtml(node.variablePrompt)}</div>` : ''}
+            `;
+        }
+        function renderGroupNode(body, node){
+            const count = (node.items || []).length;
+            body.innerHTML = `<div class="summary-row"><span class="summary-label">包含</span><span class="summary-value">${count} 个节点</span></div>`;
+        }
+        function mediaHtml(url){
+            const safe = escapeAttr(url);
+            return isVideoUrl(url)
+                ? `<video src="${safe}" data-url="${safe}" muted playsinline preload="metadata"></video>`
+                : `<img src="${safe}" data-url="${safe}" alt="" loading="lazy">`;
+        }
+        function bindMediaOpen(scope){
+            scope.querySelectorAll('img[data-url], video[data-url]').forEach(el => {
+                el.addEventListener('click', event => {
+                    event.stopPropagation();
+                    openLightbox(el.dataset.url || '');
+                });
+            });
+        }
+        function renderLinks(){
+            linksEl.innerHTML = '';
+            const nodeById = new Map(nodes.map(n => [n.id, n]));
+            connections.forEach(link => {
+                const from = nodeById.get(link.from);
+                const to = nodeById.get(link.to);
+                if(!from || !to) return;
+                const a = portPoint(from, 'out');
+                const b = portPoint(to, 'in');
+                const dx = Math.max(80, Math.abs(b.x - a.x) * .42);
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('class', 'link-path');
+                path.setAttribute('d', `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`);
+                linksEl.appendChild(path);
+            });
+        }
+        function portPoint(node, side){
+            const el = nodesEl.querySelector(`.node[data-id="${CSS.escape(node.id)}"]`);
+            const fallback = nodeSize(node.type);
+            const w = el?.offsetWidth || node.w || fallback.w;
+            const h = el?.offsetHeight || node.h || fallback.h;
+            return {
+                x: Number(node.x || 0) + (side === 'out' ? w : 0),
+                y: Number(node.y || 0) + h / 2,
+            };
+        }
+        function fitToCanvas(){
+            if(!nodes.length){
+                viewport = { x: window.innerWidth / 2, y: window.innerHeight / 2, scale: 1 };
+                applyViewport();
+                return;
+            }
+            const boxes = nodes.map(n => {
+                const size = nodeSize(n.type);
+                const w = Number(n.w || size.w);
+                const h = Number(n.h || size.h);
+                return { x:Number(n.x || 0), y:Number(n.y || 0), w, h };
+            });
+            const minX = Math.min(...boxes.map(b => b.x));
+            const minY = Math.min(...boxes.map(b => b.y));
+            const maxX = Math.max(...boxes.map(b => b.x + b.w));
+            const maxY = Math.max(...boxes.map(b => b.y + b.h));
+            const pad = 120;
+            const scale = Math.max(.16, Math.min(1.2, Math.min((window.innerWidth - 40) / Math.max(1, maxX - minX + pad), (window.innerHeight - 40) / Math.max(1, maxY - minY + pad))));
+            viewport = {
+                scale,
+                x: (window.innerWidth - (minX + maxX) * scale) / 2,
+                y: (window.innerHeight - (minY + maxY) * scale) / 2,
+            };
+            applyViewport();
+        }
+        function zoomBy(factor){
+            const cx = window.innerWidth / 2;
+            const cy = window.innerHeight / 2;
+            const before = { x:(cx - viewport.x) / viewport.scale, y:(cy - viewport.y) / viewport.scale };
+            viewport.scale = Math.max(.12, Math.min(2.5, viewport.scale * factor));
+            viewport.x = cx - before.x * viewport.scale;
+            viewport.y = cy - before.y * viewport.scale;
+            applyViewport();
+        }
+        function openLightbox(url){
+            const lightbox = document.getElementById('lightbox');
+            const image = document.getElementById('lightboxImage');
+            const video = document.getElementById('lightboxVideo');
+            image.style.display = isVideoUrl(url) ? 'none' : 'block';
+            video.style.display = isVideoUrl(url) ? 'block' : 'none';
+            image.src = isVideoUrl(url) ? '' : url;
+            video.src = isVideoUrl(url) ? url : '';
+            lightbox.classList.add('open');
+        }
+        function closeLightbox(){
+            const lightbox = document.getElementById('lightbox');
+            const image = document.getElementById('lightboxImage');
+            const video = document.getElementById('lightboxVideo');
+            lightbox.classList.remove('open');
+            image.src = '';
+            video.pause();
+            video.src = '';
+        }
+        function connectSocket(){
+            if(ws) ws.close();
+            const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+            ws = new WebSocket(`${protocol}://${location.host}/ws/stats?client_id=share_${Math.random().toString(36).slice(2)}`);
+            ws.onopen = () => status('已连接', true);
+            ws.onclose = () => status('重连中...', false);
+            ws.onmessage = event => {
+                let data = null;
+                try { data = JSON.parse(event.data); } catch(_) {}
+                if(!data || data.type !== 'canvas_updated' || data.canvas_id !== canvasId) return;
+                const updatedAt = Number(data.updated_at || 0);
+                if(updatedAt && updatedAt <= Number(lastUpdatedAt || 0)) return;
+                loadCanvas({ preserveView:true });
+            };
+        }
+        function startPolling(){
+            clearInterval(pollTimer);
+            pollTimer = setInterval(checkRemoteMeta, 2500);
+        }
+        async function checkRemoteMeta(){
+            if(remoteBusy || !token || !canvasId || document.hidden) return;
+            remoteBusy = true;
+            try {
+                const meta = await jsonFetch(`/api/share/canvases/${encodeURIComponent(canvasId)}/meta`);
+                const updatedAt = Number(meta.updated_at || 0);
+                if(updatedAt > Number(lastUpdatedAt || 0)) await loadCanvas({ preserveView:true });
+                else status('已同步', true);
+            } catch(err) {
+                status('同步失败', false);
+            } finally {
+                remoteBusy = false;
+            }
+        }
+
+        document.getElementById('loginPanel').addEventListener('submit', login);
+        document.getElementById('fitBtn').addEventListener('click', fitToCanvas);
+        document.getElementById('zoomOutBtn').addEventListener('click', () => zoomBy(.86));
+        document.getElementById('zoomInBtn').addEventListener('click', () => zoomBy(1.16));
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            if(canvasId) sessionStorage.removeItem(storageKey());
+            token = '';
+            showLogin('已退出登录');
+        });
+        document.getElementById('lightbox').addEventListener('click', closeLightbox);
+        document.getElementById('lightboxClose').addEventListener('click', closeLightbox);
+        document.getElementById('lightboxImage').addEventListener('click', event => event.stopPropagation());
+        document.getElementById('lightboxVideo').addEventListener('click', event => event.stopPropagation());
+        board.addEventListener('mousedown', event => {
+            if(event.button !== 0 || event.target.closest('.node')) return;
+            pan = { sx:event.clientX, sy:event.clientY, ox:viewport.x, oy:viewport.y };
+            event.preventDefault();
+        });
+        window.addEventListener('mousemove', event => {
+            if(!pan) return;
+            viewport.x = pan.ox + event.clientX - pan.sx;
+            viewport.y = pan.oy + event.clientY - pan.sy;
+            applyViewport();
+        });
+        window.addEventListener('mouseup', () => { pan = null; });
+        board.addEventListener('wheel', event => {
+            event.preventDefault();
+            const rect = board.getBoundingClientRect();
+            const mx = event.clientX - rect.left;
+            const my = event.clientY - rect.top;
+            const before = { x:(mx - viewport.x) / viewport.scale, y:(my - viewport.y) / viewport.scale };
+            const factor = event.deltaY > 0 ? .9 : 1.1;
+            viewport.scale = Math.max(.12, Math.min(2.5, viewport.scale * factor));
+            viewport.x = mx - before.x * viewport.scale;
+            viewport.y = my - before.y * viewport.scale;
+            applyViewport();
+        }, { passive:false });
+        window.addEventListener('resize', () => requestAnimationFrame(renderLinks));
+        document.addEventListener('visibilitychange', () => { if(!document.hidden) checkRemoteMeta(); });
+
+        (async function boot(){
+            canvasIdInput.value = canvasId || '';
+            if(!canvasId || !token) {
+                showLogin();
+                return;
+            }
+            hideLogin();
+            await loadCanvas({ preserveView:false });
+            connectSocket();
+            startPolling();
+        })();
+    </script>
+</body>
+</html>
