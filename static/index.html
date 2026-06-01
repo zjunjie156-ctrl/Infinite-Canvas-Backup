@@ -501,50 +501,9 @@
             </div>
 
             <nav>
-                <div class="nav-item active" onclick="switchUI(this, 'zimage')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.587-1.587a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.textToImage">文生图</span>
-                </div>
-                <div class="nav-item" onclick="switchUI(this, 'enhance')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.enhance">细节增强</span>
-                </div>
-                <div class="nav-item" onclick="switchUI(this, 'klein')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.imageEdit">图片编辑</span>
-                </div>
-                <div class="nav-item" onclick="switchUI(this, 'angle')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-                        <line x1="12" y1="22.08" x2="12" y2="12"></line>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.angle">角度控制</span>
-                </div>
-
-                <!-- 分隔线 -->
                 <div style="width:32px;height:1px;background:var(--border);margin:8px auto;transition:background 0.3s;"></div>
 
-                <div class="nav-item" onclick="switchUI(this, 'online')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"></path>
-                        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.online">在线生图</span>
-                </div>
-                <div class="nav-item" onclick="switchUI(this, 'gpt-chat')">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                    </svg>
-                    <span class="nav-text" data-i18n="nav.gpt">GPT 对话</span>
-                </div>
-                <div class="nav-item" onclick="switchUI(this, 'canvas')">
+                <div class="nav-item active" onclick="switchUI(this, 'canvas')">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="3" width="7" height="7"></rect>
                         <rect x="14" y="3" width="7" height="7"></rect>
@@ -589,47 +548,14 @@
                     </svg>
                     <span class="side-pill-text" data-i18n="common.apiSettings">API 设置</span>
                 </button>
-                <button class="side-pill" onclick="switchUI(this, 'comfyui-settings')" type="button" title="ComfyUI 设置">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-                        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-                        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-                        <path d="M14 14h7v7h-7z"></path>
-                        <line x1="10" y1="6.5" x2="14" y2="6.5"></line>
-                        <line x1="6.5" y1="10" x2="6.5" y2="14"></line>
-                    </svg>
-                    <span class="side-pill-text" data-i18n="common.comfyuiSettings">ComfyUI 设置</span>
-                </button>
             </div>
 
             <div class="author-box">
-                <span class="dx-letter letter-d">D</span>
-                <span class="dx-letter letter-x">X</span>
+                <span class="dx-letter letter-d">Z</span>
+                <span class="dx-letter letter-x"></span>
 
                 <div class="author-content-wrap">
-                    <div class="author-name-lite">wuli大雄</div>
-                    <div class="social-row-lite">
-                        <a href="https://space.bilibili.com/78652351" target="_blank" class="social-icon-lite">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M17.813 4.653h-.854L15.66 3.053a1.147 1.147 0 00-1.63 0l-1.3 1.6h-1.46L9.97 3.053a1.147 1.147 0 00-1.63 0L7.043 4.653h-.854a3.946 3.946 0 00-3.93 3.934v8.117a3.946 3.946 0 003.93 3.934h11.624a3.946 3.946 0 003.93-3.934V8.587a3.946 3.946 0 00-3.93-3.934zM7.152 13.9a1.465 1.465 0 111.47-1.462 1.465 1.465 0 01-1.47 1.462zm7.696 0a1.465 1.465 0 111.47-1.462 1.465 1.465 0 01-1.47 1.462z" />
-                            </svg>
-                        </a>
-                        <a href="https://www.xiaohongshu.com/user/profile/6433c34c000000001a023538" target="_blank" class="social-icon-lite">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z" />
-                            </svg>
-                        </a>
-                        <a href="https://www.youtube.com/@%E5%A4%A7%E9%9B%84dx" target="_blank" class="social-icon-lite">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
-                            </svg>
-                        </a>
-                        <a href="https://x.com/dx8152?s=21" target="_blank" class="social-icon-lite">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                            </svg>
-                        </a>
-                    </div>
+                    <div class="author-name-lite">峻杰</div>
                 </div>
             </div>
         </aside>
@@ -638,7 +564,7 @@
             (function(){
                 try {
                     var pageId = localStorage.getItem('studio_active_page');
-                    if(pageId && pageId !== 'zimage') {
+                    if(pageId && pageId !== 'canvas') {
                         document.querySelectorAll('.nav-item.active, .side-pill.active').forEach(function(n){
                             n.classList.remove('active');
                         });
@@ -650,15 +576,8 @@
         </script>
 
         <main class="stage">
-            <iframe id="frame-zimage" data-src="/static/zimage.html?v=20260512-i18n2" class="active" scrolling="yes"></iframe>
-            <iframe id="frame-enhance" data-src="/static/enhance.html?v=20260512-i18n2" scrolling="yes"></iframe>
-            <iframe id="frame-klein" data-src="/static/klein.html?v=20260512-i18n2" scrolling="yes"></iframe>
-            <iframe id="frame-angle" data-src="/static/angle.html?v=20260512-i18n2" scrolling="yes"></iframe>
-            <iframe id="frame-online" data-src="/static/online.html?v=20260512-i18n2" scrolling="yes"></iframe>
-            <iframe id="frame-gpt-chat" data-src="/static/gpt-chat.html?v=20260514-provider-chat-models" scrolling="yes"></iframe>
-            <iframe id="frame-canvas" data-src="/static/canvas.html?v=20260517-editor-mode-lock" scrolling="yes"></iframe>
+            <iframe id="frame-canvas" data-src="/static/canvas.html?v=20260520-angle-fix" class="active" scrolling="yes"></iframe>
             <iframe id="frame-api-settings" data-src="/static/api-settings.html?v=20260517-provider-fetch-form2" scrolling="yes"></iframe>
-            <iframe id="frame-comfyui-settings" data-src="/static/comfyui-settings.html?v=20260515-workflow-refresh" scrolling="yes"></iframe>
 
             <div class="nano-monitor" id="nano-monitor">
                 <div class="stat-group">
@@ -689,8 +608,8 @@
         const CID = localStorage.getItem("client_id") || generateUUID();
         localStorage.setItem("client_id", CID);
         const ACTIVE_PAGE_KEY = 'studio_active_page';
-        const DEFAULT_PAGE_ID = 'zimage';
-        const PAGE_IDS = ['zimage','enhance','klein','angle','online','gpt-chat','canvas','api-settings','comfyui-settings'];
+        const DEFAULT_PAGE_ID = 'canvas';
+        const PAGE_IDS = ['canvas','api-settings'];
 
         function switchUI(el, id, options = {}) {
             if(!PAGE_IDS.includes(id)) id = DEFAULT_PAGE_ID;
